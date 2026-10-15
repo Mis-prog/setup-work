@@ -1,0 +1,29 @@
+# Внутренние модели, которых нет на Hugging Face, — ШАБЛОН.
+# Геометрию внимания возьмите из config.json вашей модели; size_gb — размер весов.
+# `source:` — артефакт на HDFS (zip). `repository:` не нужен.
+
+models:
+  corp-coder-14b:
+    family: qwen2.5-coder
+    display_name: Corp Coder 14B (внутренний fine-tune)
+    license: proprietary
+    architecture: dense
+    parameters_b: 14.7
+    workloads: [coding, agents]
+    quality: {general: 5, coding: 8, reasoning: 5, agents: 7}
+    context_length: 32768
+    attention: {num_layers: 48, num_attention_heads: 40, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        source: hdfs:///ml/models/hf/corp-coder-14b-bf16.zip
+        size_gb: 29.5
+        engines: [vllm]
+      - id: q5_k_m
+        format: gguf
+        quantization: q5_k_m
+        source: hdfs:///ml/models/gguf/corp-coder-14b-q5_k_m.zip
+        files: ["*.gguf"]
+        size_gb: 10.5
+        engines: [llama.cpp]

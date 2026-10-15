@@ -1,0 +1,67 @@
+[project]
+name = "setup-work"
+version = "0.1.0"
+description = "Portable bootstrapper for AI/ML development environments: tooling, coding-agent harnesses, hardware-aware LLM selection and local inference."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "setup-work contributors" }]
+keywords = ["llm", "bootstrap", "vllm", "llama.cpp", "devops", "gpu"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "typer>=0.15,<1.0",
+    "rich>=13.7",
+    "pydantic>=2.7,<3",
+    "pyyaml>=6.0",
+    "huggingface-hub>=0.30",
+]
+
+[project.scripts]
+setup-work = "setup_work.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/setup_work"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "setup_work/_config"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+ignore = [
+    "S603",   # subprocess without shell: all calls use argv lists by design
+    "S607",   # partial executable path: tools are resolved from PATH intentionally
+    "B008",   # typer.Option in defaults is the Typer idiom
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S104", "S105", "S106", "S108", "RUF043", "RUF059"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-q"

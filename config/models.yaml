@@ -1,0 +1,586 @@
+# setup-work model catalog.
+#
+# Every entry below was verified against the Hugging Face Hub on 2026-10-15:
+#   * attention geometry comes from the repository's config.json
+#     (num_hidden_layers, num_key_value_heads, head_dim, sliding window),
+#   * artifact sizes are the summed sizes of the files that will be downloaded
+#     (decimal GB, 1 GB = 10^9 bytes),
+#   * GGUF file names exist in the listed repositories.
+#
+# `quality` scores are editorial 1-10 tiers used only to *order* models that are
+# already known to fit. They are not benchmark results; override them in
+# ~/.config/setup-work/models.yaml to match your own evaluations.
+#
+# Variant fields
+#   format:        safetensors | gguf
+#   quantization:  none | fp8 | awq | mxfp4 | q4_k_m | q5_k_m | q6_k | q8_0 | f16
+#   dtype:         activation / unquantised weight dtype (bf16, fp16)
+#   files:         glob patterns to download (default: everything except
+#                  `original/*`, `metal/*`, `*.pth`). For GGUF shards list the
+#                  shard pattern; llama.cpp is given the first shard.
+#   provenance:    official (model author) | community (third-party conversion)
+
+models:
+  qwen3-0.6b:
+    family: qwen3
+    display_name: Qwen3 0.6B
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 0.6
+    workloads: [general]
+    quality: {general: 2, coding: 1, reasoning: 2, agents: 1}
+    context_length: 32768
+    attention: {num_layers: 28, num_attention_heads: 16, num_kv_heads: 8, head_dim: 128}
+    tags: [smoke-test]
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-0.6B
+        size_gb: 1.50
+        engines: [vllm]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen3-0.6B-GGUF
+        files: [Qwen3-0.6B-Q8_0.gguf]
+        size_gb: 0.64
+        engines: [llama.cpp]
+
+  qwen3-4b:
+    family: qwen3
+    display_name: Qwen3 4B
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 4.0
+    workloads: [general, reasoning, agents]
+    quality: {general: 4, coding: 4, reasoning: 5, agents: 4}
+    context_length: 32768
+    attention: {num_layers: 36, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-4B
+        size_gb: 8.04
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen3-4B-GGUF
+        files: [Qwen3-4B-Q4_K_M.gguf]
+        size_gb: 2.50
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen3-4B-GGUF
+        files: [Qwen3-4B-Q8_0.gguf]
+        size_gb: 4.28
+        engines: [llama.cpp]
+
+  qwen3-8b:
+    family: qwen3
+    display_name: Qwen3 8B
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 8.2
+    workloads: [general, coding, reasoning, agents]
+    quality: {general: 6, coding: 5, reasoning: 6, agents: 6}
+    context_length: 32768
+    attention: {num_layers: 36, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-8B
+        size_gb: 16.38
+        engines: [vllm]
+      - id: fp8
+        format: safetensors
+        quantization: fp8
+        dtype: bf16
+        repository: Qwen/Qwen3-8B-FP8
+        size_gb: 9.44
+        engines: [vllm]
+      - id: awq
+        format: safetensors
+        quantization: awq
+        dtype: fp16
+        repository: Qwen/Qwen3-8B-AWQ
+        size_gb: 6.10
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen3-8B-GGUF
+        files: [Qwen3-8B-Q4_K_M.gguf]
+        size_gb: 5.03
+        engines: [llama.cpp]
+      - id: q6_k
+        format: gguf
+        quantization: q6_k
+        repository: Qwen/Qwen3-8B-GGUF
+        files: [Qwen3-8B-Q6_K.gguf]
+        size_gb: 6.73
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen3-8B-GGUF
+        files: [Qwen3-8B-Q8_0.gguf]
+        size_gb: 8.71
+        engines: [llama.cpp]
+
+  qwen3-14b:
+    family: qwen3
+    display_name: Qwen3 14B
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 14.8
+    workloads: [general, coding, reasoning, agents]
+    quality: {general: 7, coding: 6, reasoning: 7, agents: 7}
+    context_length: 32768
+    attention: {num_layers: 40, num_attention_heads: 40, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-14B
+        size_gb: 29.54
+        engines: [vllm]
+      - id: awq
+        format: safetensors
+        quantization: awq
+        dtype: fp16
+        repository: Qwen/Qwen3-14B-AWQ
+        size_gb: 9.98
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen3-14B-GGUF
+        files: [Qwen3-14B-Q4_K_M.gguf]
+        size_gb: 9.00
+        engines: [llama.cpp]
+      - id: q6_k
+        format: gguf
+        quantization: q6_k
+        repository: Qwen/Qwen3-14B-GGUF
+        files: [Qwen3-14B-Q6_K.gguf]
+        size_gb: 12.12
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen3-14B-GGUF
+        files: [Qwen3-14B-Q8_0.gguf]
+        size_gb: 15.70
+        engines: [llama.cpp]
+
+  qwen3-32b:
+    family: qwen3
+    display_name: Qwen3 32B
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 32.8
+    workloads: [general, coding, reasoning, agents]
+    quality: {general: 8, coding: 7, reasoning: 8, agents: 8}
+    context_length: 32768
+    attention: {num_layers: 64, num_attention_heads: 64, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-32B
+        size_gb: 65.52
+        engines: [vllm]
+      - id: awq
+        format: safetensors
+        quantization: awq
+        dtype: fp16
+        repository: Qwen/Qwen3-32B-AWQ
+        size_gb: 19.33
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen3-32B-GGUF
+        files: [Qwen3-32B-Q4_K_M.gguf]
+        size_gb: 19.76
+        engines: [llama.cpp]
+      - id: q6_k
+        format: gguf
+        quantization: q6_k
+        repository: Qwen/Qwen3-32B-GGUF
+        files: [Qwen3-32B-Q6_K.gguf]
+        size_gb: 26.88
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen3-32B-GGUF
+        files: [Qwen3-32B-Q8_0.gguf]
+        size_gb: 34.82
+        engines: [llama.cpp]
+
+  qwen3-30b-a3b:
+    family: qwen3
+    display_name: Qwen3 30B-A3B (MoE)
+    license: apache-2.0
+    architecture: moe
+    parameters_b: 30.5
+    active_parameters_b: 3.3
+    workloads: [general, coding, reasoning, agents]
+    quality: {general: 8, coding: 7, reasoning: 8, agents: 7}
+    context_length: 32768
+    attention: {num_layers: 48, num_attention_heads: 32, num_kv_heads: 4, head_dim: 128}
+    moe: {num_experts: 128, experts_per_token: 8}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-30B-A3B
+        size_gb: 61.07
+        engines: [vllm]
+      - id: fp8
+        format: safetensors
+        quantization: fp8
+        dtype: bf16
+        repository: Qwen/Qwen3-30B-A3B-FP8
+        size_gb: 32.45
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen3-30B-A3B-GGUF
+        files: [Qwen3-30B-A3B-Q4_K_M.gguf]
+        size_gb: 18.56
+        engines: [llama.cpp]
+      - id: q6_k
+        format: gguf
+        quantization: q6_k
+        repository: Qwen/Qwen3-30B-A3B-GGUF
+        files: [Qwen3-30B-A3B-Q6_K.gguf]
+        size_gb: 25.09
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen3-30B-A3B-GGUF
+        files: [Qwen3-30B-A3B-Q8_0.gguf]
+        size_gb: 32.48
+        engines: [llama.cpp]
+
+  qwen3-coder-30b-a3b:
+    family: qwen3-coder
+    display_name: Qwen3-Coder 30B-A3B Instruct (MoE)
+    license: apache-2.0
+    architecture: moe
+    parameters_b: 30.5
+    active_parameters_b: 3.3
+    workloads: [coding, agents]
+    quality: {general: 6, coding: 9, reasoning: 6, agents: 8}
+    context_length: 262144
+    attention: {num_layers: 48, num_attention_heads: 32, num_kv_heads: 4, head_dim: 128}
+    moe: {num_experts: 128, experts_per_token: 8}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-Coder-30B-A3B-Instruct
+        size_gb: 61.07
+        engines: [vllm]
+      - id: fp8
+        format: safetensors
+        quantization: fp8
+        dtype: bf16
+        repository: Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8
+        size_gb: 31.18
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+        files: [Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf]
+        size_gb: 18.56
+        engines: [llama.cpp]
+        provenance: community
+      - id: q6_k
+        format: gguf
+        quantization: q6_k
+        repository: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+        files: [Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf]
+        size_gb: 25.09
+        engines: [llama.cpp]
+        provenance: community
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+        files: [Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf]
+        size_gb: 32.48
+        engines: [llama.cpp]
+        provenance: community
+
+  qwen2.5-coder-7b:
+    family: qwen2.5-coder
+    display_name: Qwen2.5-Coder 7B Instruct
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 7.61
+    workloads: [coding]
+    quality: {general: 4, coding: 6, reasoning: 4, agents: 4}
+    context_length: 32768
+    attention: {num_layers: 28, num_attention_heads: 28, num_kv_heads: 4, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen2.5-Coder-7B-Instruct
+        size_gb: 15.23
+        engines: [vllm]
+      - id: awq
+        format: safetensors
+        quantization: awq
+        dtype: fp16
+        repository: Qwen/Qwen2.5-Coder-7B-Instruct-AWQ
+        size_gb: 5.57
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
+        files: [qwen2.5-coder-7b-instruct-q4_k_m.gguf]
+        size_gb: 4.68
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
+        files: [qwen2.5-coder-7b-instruct-q8_0.gguf]
+        size_gb: 8.10
+        engines: [llama.cpp]
+
+  qwen2.5-coder-14b:
+    family: qwen2.5-coder
+    display_name: Qwen2.5-Coder 14B Instruct
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 14.7
+    workloads: [coding]
+    quality: {general: 5, coding: 7, reasoning: 5, agents: 5}
+    context_length: 32768
+    attention: {num_layers: 48, num_attention_heads: 40, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen2.5-Coder-14B-Instruct
+        size_gb: 29.54
+        engines: [vllm]
+      - id: awq
+        format: safetensors
+        quantization: awq
+        dtype: fp16
+        repository: Qwen/Qwen2.5-Coder-14B-Instruct-AWQ
+        size_gb: 9.98
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen2.5-Coder-14B-Instruct-GGUF
+        files: [qwen2.5-coder-14b-instruct-q4_k_m.gguf]
+        size_gb: 8.99
+        engines: [llama.cpp]
+      - id: q6_k
+        format: gguf
+        quantization: q6_k
+        repository: Qwen/Qwen2.5-Coder-14B-Instruct-GGUF
+        files: [qwen2.5-coder-14b-instruct-q6_k.gguf]
+        size_gb: 12.12
+        engines: [llama.cpp]
+
+  qwen2.5-coder-32b:
+    family: qwen2.5-coder
+    display_name: Qwen2.5-Coder 32B Instruct
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 32.5
+    workloads: [coding]
+    quality: {general: 6, coding: 8, reasoning: 6, agents: 6}
+    context_length: 32768
+    attention: {num_layers: 64, num_attention_heads: 40, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen2.5-Coder-32B-Instruct
+        size_gb: 65.53
+        engines: [vllm]
+      - id: awq
+        format: safetensors
+        quantization: awq
+        dtype: fp16
+        repository: Qwen/Qwen2.5-Coder-32B-Instruct-AWQ
+        size_gb: 19.33
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: Qwen/Qwen2.5-Coder-32B-Instruct-GGUF
+        # Three shards; llama.cpp loads the first and discovers the rest.
+        files: ["qwen2.5-coder-32b-instruct-q4_k_m-0000?-of-00003.gguf"]
+        size_gb: 19.85
+        engines: [llama.cpp]
+      - id: q5_k_m
+        format: gguf
+        quantization: q5_k_m
+        repository: Qwen/Qwen2.5-Coder-32B-Instruct-GGUF
+        files: ["qwen2.5-coder-32b-instruct-q5_k_m-0000?-of-00003.gguf"]
+        size_gb: 23.26
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen2.5-Coder-32B-Instruct-GGUF
+        files: ["qwen2.5-coder-32b-instruct-q8_0-0000?-of-00005.gguf"]
+        size_gb: 34.82
+        engines: [llama.cpp]
+
+  llama-3.1-8b:
+    family: llama3.1
+    display_name: Llama 3.1 8B Instruct
+    license: llama3.1
+    gated: true
+    architecture: dense
+    parameters_b: 8.03
+    workloads: [general, agents]
+    quality: {general: 5, coding: 4, reasoning: 4, agents: 5}
+    context_length: 131072
+    attention: {num_layers: 32, num_attention_heads: 32, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: meta-llama/Llama-3.1-8B-Instruct
+        size_gb: 16.06
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: bartowski/Meta-Llama-3.1-8B-Instruct-GGUF
+        files: [Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf]
+        size_gb: 4.92
+        engines: [llama.cpp]
+        provenance: community
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: bartowski/Meta-Llama-3.1-8B-Instruct-GGUF
+        files: [Meta-Llama-3.1-8B-Instruct-Q8_0.gguf]
+        size_gb: 8.54
+        engines: [llama.cpp]
+        provenance: community
+
+  gemma-3-12b:
+    family: gemma3
+    display_name: Gemma 3 12B IT
+    license: gemma
+    gated: true
+    architecture: dense
+    parameters_b: 12.2
+    workloads: [general, reasoning]
+    quality: {general: 7, coding: 5, reasoning: 6, agents: 5}
+    context_length: 131072
+    # 48 layers: 8 global-attention layers + 40 local layers with a 1024-token window.
+    attention:
+      num_layers: 48
+      num_attention_heads: 16
+      num_kv_heads: 8
+      head_dim: 256
+      sliding_window: 1024
+      sliding_window_layers: 40
+    # Gemma activations overflow in fp16; never run it with an fp16 compute dtype.
+    fp16_safe: false
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: google/gemma-3-12b-it
+        size_gb: 24.37
+        engines: [vllm]
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        repository: ggml-org/gemma-3-12b-it-GGUF
+        files: [gemma-3-12b-it-Q4_K_M.gguf]
+        size_gb: 7.30
+        engines: [llama.cpp]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: ggml-org/gemma-3-12b-it-GGUF
+        files: [gemma-3-12b-it-Q8_0.gguf]
+        size_gb: 12.51
+        engines: [llama.cpp]
+
+  gpt-oss-20b:
+    family: gpt-oss
+    display_name: gpt-oss 20B (MoE)
+    license: apache-2.0
+    architecture: moe
+    parameters_b: 21.0
+    active_parameters_b: 3.6
+    workloads: [general, reasoning, agents, coding]
+    quality: {general: 7, coding: 7, reasoning: 8, agents: 7}
+    context_length: 131072
+    # 24 layers alternating full attention and a 128-token sliding window.
+    attention:
+      num_layers: 24
+      num_attention_heads: 64
+      num_kv_heads: 8
+      head_dim: 64
+      sliding_window: 128
+      sliding_window_layers: 12
+    moe: {num_experts: 32, experts_per_token: 4}
+    variants:
+      - id: mxfp4
+        format: safetensors
+        quantization: mxfp4
+        dtype: bf16
+        repository: openai/gpt-oss-20b
+        size_gb: 13.76
+        engines: [vllm]
+      - id: mxfp4-gguf
+        format: gguf
+        quantization: mxfp4
+        repository: ggml-org/gpt-oss-20b-GGUF
+        files: [gpt-oss-20b-MXFP4.gguf]
+        size_gb: 12.11
+        engines: [llama.cpp]
+
+  qwen3-embedding-0.6b:
+    family: qwen3-embedding
+    display_name: Qwen3 Embedding 0.6B
+    license: apache-2.0
+    architecture: dense
+    parameters_b: 0.6
+    workloads: [embedding]
+    quality: {embedding: 6}
+    context_length: 32768
+    attention: {num_layers: 28, num_attention_heads: 16, num_kv_heads: 8, head_dim: 128}
+    variants:
+      - id: bf16
+        format: safetensors
+        dtype: bf16
+        repository: Qwen/Qwen3-Embedding-0.6B
+        size_gb: 1.19
+        engines: [vllm]
+      - id: q8_0
+        format: gguf
+        quantization: q8_0
+        repository: Qwen/Qwen3-Embedding-0.6B-GGUF
+        files: [Qwen3-Embedding-0.6B-Q8_0.gguf]
+        size_gb: 0.64
+        engines: [llama.cpp]

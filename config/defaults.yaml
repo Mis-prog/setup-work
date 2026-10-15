@@ -1,0 +1,97 @@
+# setup-work global defaults.
+#
+# Override any value by creating ~/.config/setup-work/defaults.yaml (or the file
+# pointed to by $SETUP_WORK_USER_CONFIG_DIR/defaults.yaml). Mappings are merged
+# key by key; lists and scalars are replaced.
+#
+# Paths support "~" and environment variables. XDG_* variables are honoured.
+
+paths:
+  data_dir: ${XDG_DATA_HOME:-~/.local/share}/setup-work
+  state_dir: ${XDG_STATE_HOME:-~/.local/state}/setup-work
+  bin_dir: ${SETUP_WORK_BIN_DIR:-~/.local/bin}
+  # null -> respect HF_HUB_CACHE / HF_HOME / huggingface_hub defaults.
+  model_cache_dir: null
+
+inference:
+  host: 127.0.0.1
+  port: 8000
+  # Fraction of each GPU vLLM is allowed to pre-allocate.
+  gpu_memory_utilization: 0.90
+  # Memory that must remain free on every device after loading (GiB).
+  vram_safety_margin_gb: 1.0
+  # Fixed runtime overhead per device (GiB): CUDA context, CUDA graphs,
+  # activation buffers, NCCL workspace, compute buffers. These are estimates.
+  runtime_overhead_gb:
+    vllm: 2.0
+    llama.cpp: 0.6
+  ready_timeout_s: 900
+  stop_timeout_s: 30
+  default_kv_cache_dtype: fp16
+
+recommend:
+  default_context: 8192
+  default_concurrency: 1
+  max_results: 5
+  # RAM to leave for the OS and other processes (GiB).
+  ram_safety_margin_gb: 4.0
+
+downloads:
+  # Ask for confirmation before downloading more than this many GiB.
+  confirm_above_gb: 1.0
+  # Verify sha256 of LFS files against Hugging Face metadata after download.
+  verify_checksums: true
+
+# Pinned user-space tool installers. Every artifact is checked against its sha256.
+# Checksums were taken from the official release pages (2026-10-15).
+tools:
+  uv:
+    version: 0.12.13
+    url: https://github.com/astral-sh/uv/releases/download/{version}/uv-{target}.tar.gz
+    sha256:
+      aarch64-apple-darwin: 7e6ddb9316acc00f2296c82ff4d99977870ee34b2f0ddcae9444d714db9364ed
+      x86_64-apple-darwin: 5e287ef61cb6a9b61b3a83fef124fd143e400468a7dac794230147a810e17119
+      aarch64-unknown-linux-gnu: 2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9
+      x86_64-unknown-linux-gnu: 745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd
+  node:
+    version: 24.20.0
+    min_version: "22.0.0"
+    url: https://nodejs.org/dist/v{version}/node-v{version}-{target}.{ext}
+    sha256:
+      darwin-arm64: 40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8
+      darwin-x64: 9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4
+      linux-arm64: 5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7
+      linux-x64: 2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
+  git-lfs:
+    version: 3.8.0
+    url: https://github.com/git-lfs/git-lfs/releases/download/v{version}/git-lfs-{target}-v{version}.{ext}
+    sha256:
+      darwin-arm64: caff76a7d070d8160c89bc39b6e85d98f24135b6fed038a3b4de2590d25102d8
+      darwin-amd64: f1c17aeca0b4eaab9ea606226477dbed3b84b56fe0811a9f967d2ea2b2393c53
+      linux-amd64: e455e00f15d9b95661b8d53498ffb0c3367962cf1ec73c31ab7369516cd6ab8d
+      linux-arm64: ac9c8efac980bb0505ead384d087e2acb6486fd8498691a2165fa174ec6118c2
+  python:
+    version: "3.12"
+
+# Inference engine installers.
+engines:
+  llama.cpp:
+    # Prebuilt official release (https://github.com/ggml-org/llama.cpp/releases).
+    release: b11080
+    url: https://github.com/ggml-org/llama.cpp/releases/download/{release}/llama-{release}-bin-{asset}.tar.gz
+    assets:
+      macos-arm64: 314556ebc20cbab8906c3ecbaf48aee74b224a178a20f57fbbe697858f3f83f4
+      macos-x64: b830d45bf19ebaa451b190e5b9917107fe9069ac454af3b693f5b7090fab7f20
+      ubuntu-x64: 6163fe1312164d01eb8de1f0a213ce2b36d58962f1544484b4a1b1369bc43ebc
+      ubuntu-arm64: 0a4124ef7c8fd8779427d6e58ab47103cfb9c69459a54102d8883f8e1ab3db5e
+      ubuntu-cuda-12.8-x64: aaabbf8dff862c97abb937f82a94fe8e8045c2f76dbf2cc5d80897cd8c8b07bf
+      ubuntu-cuda-13.4-x64: 9e53c2fdc4fcfe2f6c2889ed95db66b7f455373794414030e2de06f190a25d61
+    # CUDA runtime bundles published next to the CUDA builds. Fetched only when the
+    # CUDA runtime libraries (libcudart/libcublas) are not already present.
+    runtime_url: https://github.com/ggml-org/llama.cpp/releases/download/{release}/cudart-llama-{release}-bin-{asset}.tar.gz
+    runtime_assets:
+      ubuntu-cuda-12.8-x64: 7cce2d1157c0c58ff8e1cb6b606e11f805e9d9a448d9592fc78371a3a527303b
+      ubuntu-cuda-13.4-x64: e31b63bbd086f57b7d0c793bd18d1308e31e1059754f6fdd27c9f94a070912d0
+  vllm:
+    version: 0.30.0
+    python: "3.12"

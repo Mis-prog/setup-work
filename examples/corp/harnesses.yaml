@@ -1,0 +1,96 @@
+# Внутренние форки харнесов — ШАБЛОН.
+# Замените repository/ref на реальные. Команды сборки взяты из upstream-проектов
+# (2026-10-15) — сверьте с вашими форками. Приватные репозитории клонируются
+# вашей обычной git-аутентификацией (SSH-ключ / credential helper).
+#
+#   make config-validate
+#   make harness-install NAME=qwen-code DRY_RUN=1
+#   make harness-install NAME=qwen-code
+#   make harness-doctor NAME=qwen-code
+
+harnesses:
+  # Upstream: QwenLM/qwen-code — npm workspaces, bin scripts/cli-entry.js, Node >= 22.
+  # Перекрывает встроенный рецепт qwen-code (npm-пакет) внутренним форком.
+  qwen-code:
+    description: Qwen Code (внутренний форк)
+    source: git
+    repository: git@git.corp.example:ai-tools/qwen-code.git
+    ref: CHANGE-ME          # тег или commit SHA
+    install:
+      method: none
+      build:
+        - [npm, ci]
+        - [npm, run, build]
+    binaries:
+      - {name: qwen, path: scripts/cli-entry.js, interpreter: node}
+    requires: {node: ">=22"}
+    environment:
+      optional: [OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL]
+    verify: [qwen, --version]
+
+  # Upstream: anomalyco/opencode — Bun monorepo, CLI: packages/cli/src/index.ts.
+  opencode:
+    description: OpenCode (внутренний форк)
+    source: git
+    repository: git@git.corp.example:ai-tools/opencode.git
+    ref: CHANGE-ME
+    install:
+      method: none
+      build:
+        - [bun, install, --frozen-lockfile]
+    binaries:
+      - {name: opencode, path: packages/cli/src/index.ts, interpreter: bun}
+    requires_commands: [bun]
+    environment:
+      optional: [OPENAI_BASE_URL, OPENAI_API_KEY]
+    verify: [opencode, --version]
+
+  # Upstream: badlogic/pi-mono — npm workspaces, bin packages/coding-agent/dist/bundle/cli.js,
+  # Node >= 22.19.
+  pi:
+    description: pi coding agent (внутренний форк)
+    source: git
+    repository: git@git.corp.example:ai-tools/pi-mono.git
+    ref: CHANGE-ME
+    install:
+      method: none
+      build:
+        - [npm, ci]
+        - [npm, run, build]
+    binaries:
+      - {name: pi, path: packages/coding-agent/dist/bundle/cli.js, interpreter: node}
+    requires: {node: ">=22.19"}
+    verify: [pi, --version]
+
+  # Upstream: NousResearch/hermes-agent — Python (>=3.11,<3.15), console script `hermes`.
+  hermes:
+    description: Hermes Agent (внутренний форк)
+    source: git
+    repository: git@git.corp.example:ai-tools/hermes-agent.git
+    ref: CHANGE-ME
+    install:
+      method: uv            # отдельный venv, пакеты из корпоративного PyPI
+      python: "3.12"
+    binaries: [hermes]
+    environment:
+      optional: [OPENAI_BASE_URL, OPENAI_API_KEY]
+    verify: [hermes, --help]
+
+  # deepseek: внутренний харнес. Заполните под ваш проект — ниже два типичных варианта.
+  deepseek:
+    description: DeepSeek coding agent (внутренний)
+    source: git
+    repository: git@git.corp.example:ai-tools/deepseek-agent.git
+    ref: CHANGE-ME
+    # Вариант A — Python-пакет с console script:
+    install: {method: uv, python: "3.12"}
+    binaries: [deepseek]
+    # Вариант B — Node/TypeScript:
+    # install:
+    #   method: none
+    #   build: [[npm, ci], [npm, run, build]]
+    # binaries:
+    #   - {name: deepseek, path: dist/cli.js, interpreter: node}
+    environment:
+      optional: [DEEPSEEK_BASE_URL, OPENAI_BASE_URL, OPENAI_API_KEY]
+    verify: [deepseek, --help]

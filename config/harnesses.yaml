@@ -1,0 +1,85 @@
+# Coding-agent harness recipes.
+#
+# Package names, binaries and runtime requirements were verified against the npm
+# registry / PyPI and the official repositories on 2026-10-15. Versions are pinned;
+# bump them with `make harness-update NAME=<name> VERSION=<version>` or override the
+# recipe in ~/.config/setup-work/harnesses.yaml.
+#
+# Recipe schema (see examples/custom-harness.yaml for a complete example):
+#   source:      npm | pypi | git | local
+#   package:     package name (npm / pypi)
+#   version:     exact version (npm / pypi). "latest" is allowed but reported as unpinned.
+#   repository:  git URL (git). HTTPS or SSH; existing git credentials are used.
+#   ref:         branch, tag or commit (git)
+#   path:        directory (local)
+#   install:
+#     method:    npm | uv | none      (how to install a git/local checkout)
+#     python:    Python version for uv-managed environments
+#     build:     optional argv run inside the checkout (requires --allow-build)
+#   binaries:    executables to link into bin_dir
+#   requires:    runtime requirements, e.g. {node: ">=22"}
+#   environment:
+#     required:  variables that must be set before use (names only, never values)
+#     optional:  variables the harness understands
+#   verify:      argv used by `harness-doctor` to check the installation
+
+harnesses:
+  claude-code:
+    description: Anthropic Claude Code agentic coding CLI
+    homepage: https://github.com/anthropics/claude-code
+    source: npm
+    package: "@anthropic-ai/claude-code"
+    version: 2.1.285
+    binaries: [claude]
+    requires: {node: ">=22"}
+    environment:
+      optional: [ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL]
+    verify: [claude, --version]
+
+  codex:
+    description: OpenAI Codex CLI
+    homepage: https://github.com/openai/codex
+    source: npm
+    package: "@openai/codex"
+    version: 0.159.1
+    binaries: [codex]
+    requires: {node: ">=16"}
+    environment:
+      optional: [OPENAI_API_KEY, OPENAI_BASE_URL]
+    verify: [codex, --version]
+
+  qwen-code:
+    description: Qwen Code agentic coding CLI (works with any OpenAI-compatible endpoint)
+    homepage: https://github.com/QwenLM/qwen-code
+    source: npm
+    package: "@qwen-code/qwen-code"
+    version: 0.24.7
+    binaries: [qwen]
+    requires: {node: ">=22"}
+    environment:
+      optional: [OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL]
+    verify: [qwen, --version]
+
+  opencode:
+    description: OpenCode terminal coding agent
+    homepage: https://github.com/anomalyco/opencode
+    source: npm
+    package: opencode-ai
+    version: 1.18.33
+    binaries: [opencode]
+    environment:
+      optional: [OPENAI_API_KEY, ANTHROPIC_API_KEY]
+    verify: [opencode, --version]
+
+  aider:
+    description: Aider AI pair programming in the terminal
+    homepage: https://github.com/Aider-AI/aider
+    source: pypi
+    package: aider-chat
+    version: 0.86.2
+    # aider-chat 0.86.2 declares requires-python >=3.10,<3.13
+    install: {method: uv, python: "3.12"}
+    binaries: [aider]
+    environment:
+      optional: [OPENAI_API_KEY, OPENAI_API_BASE, ANTHROPIC_API_KEY]
+    verify: [aider, --version]

@@ -1,0 +1,68 @@
+{
+  "os": {
+    "system": "Linux",
+    "release": "5.15.0",
+    "distro": "Ubuntu 22.04.4 LTS",
+    "arch": "x86_64",
+    "container": false,
+    "wsl": false
+  },
+  "cpu": {
+    "model": "example x86_64 CPU",
+    "logical_cores": 32,
+    "physical_cores": 16,
+    "usable_cores": 32
+  },
+  "memory": {
+    "total_bytes": 137438953472,
+    "available_bytes": 123480309760,
+    "cgroup_limit_bytes": null
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "vendor": "nvidia",
+      "name": "Tesla V100-SXM2-32GB",
+      "memory_total_bytes": 34359738368,
+      "memory_free_bytes": 33822867456,
+      "compute_capability": "7.0",
+      "compute_capability_source": "nvidia-smi",
+      "unified_memory": false,
+      "uuid": "GPU-example-0",
+      "pci_bus_id": "00000000:01:00.0"
+    },
+    {
+      "index": 1,
+      "vendor": "nvidia",
+      "name": "Tesla V100-SXM2-32GB",
+      "memory_total_bytes": 34359738368,
+      "memory_free_bytes": 33822867456,
+      "compute_capability": "7.0",
+      "compute_capability_source": "nvidia-smi",
+      "unified_memory": false,
+      "uuid": "GPU-example-1",
+      "pci_bus_id": "00000000:02:00.0"
+    }
+  ],
+  "accelerator": "nvidia",
+  "nvidia_driver": "535.183.01",
+  "cuda_driver_version": "12.2",
+  "cuda_toolkit_version": null,
+  "metal_working_set_bytes": null,
+  "metal_working_set_source": null,
+  "precisions": [
+    "fp32",
+    "fp16"
+  ],
+  "storage": [
+    {
+      "path": "/home/user",
+      "total_bytes": 2147483648000,
+      "free_bytes": 1288490188800
+    }
+  ],
+  "notes": [
+    "example profile: 2x V100 32GB"
+  ],
+  "source": "example"
+}

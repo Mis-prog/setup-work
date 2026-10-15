@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.13"
+          python-version: "3.12"
+      - run: make sync
+      - run: make lint
+      - run: make config-validate
+      - name: validate the corporate template
+        run: SETUP_WORK_TEAM_CONFIG_DIR=examples/corp make config-validate
+      - name: shellcheck stage-0 bootstrap
+        run: shellcheck -s sh scripts/bootstrap.sh
+
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.13"
+          python-version: ${{ matrix.python }}
+      - run: make sync
+      - run: make test
+      - name: CLI smoke (read-only / dry-run)
+        run: |
+          make help
+          make doctor
+          make hardware-json > /dev/null
+          make recommend TASK=coding HARDWARE=examples/hardware/4x-a100-80gb.json
+          make recommend TASK=coding HARDWARE=examples/hardware/cpu-only-32gb.json ENGINE=llama.cpp
+          make bootstrap DRY_RUN=1
+          make setup PROFILE=full DRY_RUN=1 HARDWARE=examples/hardware/4x-a100-80gb.json
+          make serve MODEL=qwen3-32b:bf16 ENGINE=vllm PLAN=1 HARDWARE=examples/hardware/4x-a100-80gb.json
+
+  bootstrap-without-uv:
+    # Stage 0 must work on a machine that has neither uv nor a modern Python.
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git make curl ca-certificates
+      - uses: actions/checkout@v4
+      - run: sh scripts/bootstrap.sh
+      - run: PATH="$HOME/.local/bin:$PATH" make doctor

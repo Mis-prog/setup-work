@@ -1,0 +1,24 @@
+# Corporate / internal sources. Empty by default: setup-work then uses the public
+# upstreams. Teams put their version in a shared directory pointed to by
+# $SETUP_WORK_TEAM_CONFIG_DIR (see examples/corp/), users can still override in
+# ~/.config/setup-work/corporate.yaml.
+#
+# hdfs:      how to read hdfs:// URIs (`hdfs dfs -get`, Kerberos ticket check)
+# scripts:   corporate setup scripts (e.g. writing pip.conf / .npmrc); run by
+#            `make corp-setup`, shown and confirmed first, skipped when `creates` exist
+# env:       non-secret environment for every command setup-work runs
+#            (e.g. UV_PYTHON_INSTALL_MIRROR, NPM_CONFIG_REGISTRY, SSL_CERT_FILE)
+# bridge_pip_conf: translate pip.conf index settings into UV_* for uv
+# trusted_git_hosts: harness builds from these hosts do not need --allow-build
+# models / engines / tools: artifact sources replacing Hugging Face / GitHub downloads
+
+hdfs:
+  cli: hdfs
+  kerberos: auto
+scripts: []
+env: {}
+bridge_pip_conf: true
+trusted_git_hosts: []
+models: {}
+engines: {}
+tools: {}

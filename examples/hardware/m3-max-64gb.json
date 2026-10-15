@@ -1,0 +1,57 @@
+{
+  "os": {
+    "system": "Darwin",
+    "release": "25.0.0",
+    "distro": "macOS 26.0",
+    "arch": "arm64",
+    "container": false,
+    "wsl": false
+  },
+  "cpu": {
+    "model": "Apple M3 Max",
+    "logical_cores": 16,
+    "physical_cores": 16,
+    "usable_cores": 16
+  },
+  "memory": {
+    "total_bytes": 68719476736,
+    "available_bytes": 42949672960,
+    "cgroup_limit_bytes": null
+  },
+  "gpus": [
+    {
+      "index": 0,
+      "vendor": "apple",
+      "name": "Apple M3 Max GPU (Metal)",
+      "memory_total_bytes": 51539607552,
+      "memory_free_bytes": null,
+      "compute_capability": null,
+      "compute_capability_source": null,
+      "unified_memory": true,
+      "uuid": null,
+      "pci_bus_id": null
+    }
+  ],
+  "accelerator": "apple",
+  "nvidia_driver": null,
+  "cuda_driver_version": null,
+  "cuda_toolkit_version": null,
+  "metal_working_set_bytes": 51539607552,
+  "metal_working_set_source": "estimated (75% of RAM)",
+  "precisions": [
+    "fp32",
+    "fp16",
+    "bf16"
+  ],
+  "storage": [
+    {
+      "path": "/Users/user",
+      "total_bytes": 1073741824000,
+      "free_bytes": 536870912000
+    }
+  ],
+  "notes": [
+    "example profile: MacBook Pro M3 Max 64GB"
+  ],
+  "source": "example"
+}

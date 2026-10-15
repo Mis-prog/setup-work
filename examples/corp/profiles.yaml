@@ -1,0 +1,20 @@
+# Командные профили.
+#   make setup PROFILE=corp-dev DRY_RUN=1
+#   make setup PROFILE=corp-gpu ALLOW_DOWNLOADS=1
+
+profiles:
+  corp-dev:
+    description: Ноутбук/рабочая станция — инструменты и внутренние харнесы
+    extends: [developer]
+    harnesses:
+      required: [qwen-code, opencode, pi, hermes, deepseek]
+    validation: [tools, harnesses]
+
+  corp-gpu:
+    description: GPU-сервер — движки и веса из HDFS + внутренние харнесы
+    extends: [corp-dev, gpu-inference]
+    models:
+      preferences: {task: coding, engine: vllm, context: 32768}
+      # скачиваются только с ALLOW_DOWNLOADS=1
+      pull: ["qwen3-coder-30b-a3b:fp8"]
+    validation: [tools, harnesses, engines, gpu:nvidia]

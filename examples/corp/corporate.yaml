@@ -1,0 +1,78 @@
+# Командный corporate.yaml — ШАБЛОН. Замените пути/хосты на реальные.
+# Положите каталог examples/corp/ в общий репозиторий команды и укажите
+#   export SETUP_WORK_TEAM_CONFIG_DIR=/path/to/team-config
+# Секреты сюда не пишутся (валидатор отклоняет *TOKEN*/*SECRET*/*PASSWORD*/*API_KEY*).
+
+hdfs:
+  cli: hdfs                 # или полный путь: /opt/hadoop/bin/hdfs
+  kerberos: required        # без валидного билета (klist -s) — стоп и подсказка `kinit`
+  extra_args: []            # например ["-D", "dfs.client.use.datanode.hostname=true"]
+  timeout_s: 21600
+
+# Корпоративные скрипты настройки. Запускаются `make corp-setup` (и первым шагом
+# `make bootstrap`), каждый показывается и подтверждается; пропускается, если
+# все файлы из `creates` уже существуют.
+scripts:
+  - name: pypi
+    description: настроить корпоративный PyPI (pip.conf)
+    argv: [/opt/corp/bin/setup-pypi.sh]
+    creates: [~/.config/pip/pip.conf]
+  - name: npm
+    description: настроить корпоративный npm registry (.npmrc)
+    argv: [/opt/corp/bin/setup-npm.sh]
+    creates: [~/.npmrc]
+
+# Несекретные переменные для всех команд setup-work (пользовательское окружение важнее).
+env:
+  # uv качает интерпретаторы Python с GitHub — укажите внутреннее зеркало, если есть:
+  # UV_PYTHON_INSTALL_MIRROR: https://artifactory.corp.example/python-build-standalone
+  # SSL_CERT_FILE: /etc/pki/tls/certs/corp-ca-bundle.crt
+  # NODE_EXTRA_CA_CERTS: /etc/pki/tls/certs/corp-ca-bundle.crt
+  HF_HUB_OFFLINE: "1"       # веса берём из HDFS, а не с huggingface.co
+
+# uv не читает pip.conf: настройки index-url/extra-index-url/trusted-host/cert
+# из pip.conf переводятся в UV_DEFAULT_INDEX/UV_INDEX/UV_INSECURE_HOST/SSL_CERT_FILE.
+bridge_pip_conf: true
+
+# Сборка харнесов из этих git-хостов не требует ALLOW_BUILD=1 (но команды всё равно
+# показываются перед запуском, а установка из git подтверждается).
+trusted_git_hosts:
+  - git.corp.example
+
+# Веса моделей: "<id>:<variant>" из каталога -> zip на HDFS.
+# Внутри zip: для GGUF — .gguf-файл(ы) (шарды тоже); для vLLM — каталог в формате
+# Hugging Face (config.json + *.safetensors + токенизатор). Верхний каталог в архиве
+# допустим. sha256 необязателен, но рекомендуется (`sha256sum file.zip`).
+models:
+  "qwen3-8b:q4_k_m":
+    uri: hdfs:///ml/models/gguf/Qwen3-8B-Q4_K_M.zip
+  "qwen3-coder-30b-a3b:q4_k_m":
+    uri: hdfs:///ml/models/gguf/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.zip
+  "qwen3-coder-30b-a3b:fp8":
+    uri: hdfs:///ml/models/hf/Qwen3-Coder-30B-A3B-Instruct-FP8.zip
+  "qwen3-32b:awq":
+    uri: hdfs:///ml/models/hf/Qwen3-32B-AWQ.zip
+    # sha256: 0123...abcd
+
+# Движки: готовые сборки.
+engines:
+  llama.cpp:
+    uri: hdfs:///ml/engines/llama.cpp-b11080-cuda12.8-linux-x64.zip
+    # path: build/bin/llama-server   # если в архиве несколько llama-server
+  vllm:
+    # Обычный каталог venv, упакованный в zip. После распаковки setup-work:
+    #  - проверяет bin/python; если базового Python по старому пути нет — находит
+    #    интерпретатор той же версии (или предлагает `uv python install X.Y`) и
+    #    перепрописывает pyvenv.cfg и bin/python*;
+    #  - переписывает shebang в bin/* на новое место;
+    #  - запускает vLLM как `<venv>/bin/python -c "...vllm main..." serve ...`.
+    uri: hdfs:///ml/engines/vllm-0.30.0-py312-cu128-venv.zip
+    # path: vllm-venv                 # каталог venv внутри архива, если не находится сам
+
+# Архивы инструментов (зеркала официальных файлов; закреплённый sha256 проверяется).
+# Плейсхолдеры: {version} {target} {name}
+tools:
+  node:
+    uri: hdfs:///ml/tools/node/node-v{version}-{target}.tar.xz
+  git-lfs:
+    uri: hdfs:///ml/tools/git-lfs/{name}
