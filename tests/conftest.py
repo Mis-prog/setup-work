@@ -15,7 +15,7 @@ HW_DIR = ROOT / "examples" / "hardware"
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     """Every test gets private data/state/bin/config dirs; nothing touches $HOME."""
-    for var in ("SETUP_WORK_HARDWARE_FILE", "SETUP_WORK_API_KEY", "SETUP_WORK_MODEL_CACHE"):
+    for var in ("SETUP_WORK_HARDWARE_FILE", "SETUP_WORK_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     for k in list(__import__("os").environ):
         if k.startswith("SETUP_WORK_") and k not in ("SETUP_WORK_CONFIG_DIR",):
@@ -25,7 +25,6 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SETUP_WORK_BIN_DIR", str(tmp_path / "bin"))
     monkeypatch.setenv("SETUP_WORK_USER_CONFIG_DIR", str(tmp_path / "userconf"))
     monkeypatch.setenv("SETUP_WORK_CONFIG_DIR", str(ROOT / "config"))
-    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hf"))
     return tmp_path
 
 

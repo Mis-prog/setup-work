@@ -143,7 +143,7 @@ def test_model_pull_from_hdfs_gguf(tmp_path, fake_hdfs, hw_4090):
         name="x",
     )
     assert res.reused
-    # serve resolves the unpacked file without touching Hugging Face
+    # serve resolves the unpacked file
     plan = plan_launch(cfg, hw_4090, "qwen3-8b:q4_k_m", ServeOptions())
     assert plan.launch.model_path == str(entry)
     assert hub.list_artifact_models(cfg)[0]["ref"] == "qwen3-8b:q4_k_m"
@@ -461,3 +461,68 @@ def test_bootstrap_sh_team_env(tmp_path):
     assert "refusing secret-like key CORP_TOKEN" in out.stdout
     assert "pip install --user" in out.stdout and "uv==0.12.13" in out.stdout
     assert "re-resolved" in out.stdout
+
+
+def _registries_env(tmp_path, **extra):
+    home = tmp_path / "h"
+    (home / "nfs" / "tokens").mkdir(parents=True)
+    (home / "nfs" / "token.txt").write_text("tok/+=x\n")
+    (home / "nfs" / "tokens" / "npm64.txt").write_text("QmFzZTY0\n")
+    return home, {
+        "HOME": str(home),
+        "PATH": "/usr/bin:/bin",
+        "SETUP_WORK_PYPI_INDEX": "https://repo.corp.example/pypi/simple",
+        "SETUP_WORK_PYPI_AUTH_FILE": "~/nfs/token.txt",
+        "SETUP_WORK_PYPI_TRUSTED_HOST": "repo.corp.example",
+        "SETUP_WORK_NPM_REGISTRY": "https://repo.corp.example/npm",
+        "SETUP_WORK_NPM_AUTH_FILE": "$HOME/nfs/tokens/npm64.txt",
+        "SETUP_WORK_NPM_STRICT_SSL": "false",
+        **extra,
+    }
+
+
+def _run_registries(env, *args):
+    return subprocess.run(
+        ["sh", str(ROOT / "scripts" / "bootstrap.sh"), "--registries-only", *args],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_bootstrap_sh_writes_registries(tmp_path):
+    home, env = _registries_env(tmp_path)
+    (home / ".config" / "pip").mkdir(parents=True)
+    (home / ".config" / "pip" / "pip.conf").write_text("[global]\ntimeout = 60\n")
+    (home / ".npmrc").write_text("audit=false\nregistry=https://old.example/\n")
+    for _ in range(2):  # idempotent
+        out = _run_registries(env)
+        assert out.returncode == 0, out.stderr
+    assert "tok/+=x" not in out.stdout + out.stderr  # secrets are never printed
+    assert "QmFzZTY0" not in out.stdout + out.stderr
+
+    pip_conf = (home / ".config" / "pip" / "pip.conf").read_text()
+    assert "timeout = 60" in pip_conf
+    assert "index-url = https://token:tok%2F%2B%3Dx@repo.corp.example/pypi/simple" in pip_conf
+    assert "trusted-host = repo.corp.example" in pip_conf
+
+    npmrc = (home / ".npmrc").read_text().splitlines()
+    assert npmrc == [
+        "audit=false",
+        "registry=https://repo.corp.example/npm/",
+        "//repo.corp.example/npm/:_authToken=QmFzZTY0",
+        "strict-ssl=false",
+    ]
+    for f in (home / ".config" / "pip" / "pip.conf", home / ".npmrc"):
+        assert f.stat().st_mode & 0o777 == 0o600
+
+
+def test_bootstrap_sh_registries_dry_run_and_missing_token(tmp_path):
+    home, env = _registries_env(tmp_path)
+    out = _run_registries(env, "--dry-run")
+    assert out.returncode == 0, out.stderr
+    assert not (home / ".npmrc").exists()
+    env["SETUP_WORK_NPM_AUTH_FILE"] = "/nonexistent/token"
+    out = _run_registries(env)
+    assert out.returncode == 6
+    assert "cannot read npm auth file" in out.stderr

@@ -54,7 +54,6 @@ class ServeOptions:
     threads: int | None = None
     kv_cache_dtype: str | None = None
     served_model_name: str | None = None
-    revision: str | None = None
     force: bool = False
     extra_args: list[str] = field(default_factory=list)
 
@@ -174,27 +173,11 @@ def plan_launch(
         served = served or path.stem
         warnings.append("local model outside the catalog: memory fit is not pre-checked")
     elif "/" in model_ref and ":" not in model_ref:
-        engine_name = get_engine(opts.engine or "vllm").name
-        if engine_name != "vllm":
-            raise UsageError(
-                "raw Hugging Face repos are served with vLLM; for llama.cpp pass a catalog "
-                "ref (model:variant) or a local .gguf path"
-            )
-        model_path = model_ref
-        served = served or model_ref
-        warnings.append("repository outside the catalog: memory fit is not pre-checked")
-        if check_cache:
-            from huggingface_hub import try_to_load_from_cache
-
-            hit = try_to_load_from_cache(
-                model_ref, "config.json", cache_dir=str(hub.cache_dir(cfg)), revision=opts.revision
-            )
-            if not isinstance(hit, str):
-                raise NotFoundError(
-                    f"{model_ref} is not in the local cache (serve never downloads implicitly)",
-                    hint=f"make model-pull MODEL={model_ref}",
-                )
-            model_path = str(Path(hit).parent)
+        raise NotFoundError(
+            f"{model_ref} does not exist",
+            hint="pass a catalog ref (MODEL=<id>:<variant>), a local .gguf file "
+            "or a model directory",
+        )
     else:
         model_id = model_ref.split(":")[0]
         spec, variant = resolve(cfg, model_ref)
@@ -248,7 +231,6 @@ def plan_launch(
         gpu_layers=opts.gpu_layers,
         threads=opts.threads,
         kv_cache_dtype=kv_dtype,
-        revision=opts.revision if spec is None else None,
         extra_args=list(opts.extra_args),
     )
 

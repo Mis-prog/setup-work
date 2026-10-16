@@ -91,7 +91,7 @@ class LaunchConfig:
     name: str
     engine: str
     model_ref: str  # catalog ref or user-supplied id
-    model_path: str  # local file (gguf) or HF repo id / local dir (vllm)
+    model_path: str  # local file (gguf) or local model dir (vllm)
     served_model_name: str
     host: str = "127.0.0.1"
     port: int = 8000
@@ -106,7 +106,6 @@ class LaunchConfig:
     threads: int | None = None
     kv_cache_dtype: str | None = None
     embedding: bool = False
-    revision: str | None = None
     api_key_file: str | None = None
     binary: str | None = None
     extra_args: list[str] = field(default_factory=list)
@@ -341,8 +340,6 @@ class VllmEngine:
         argv = [*head, "serve", launch.model_path]
         argv += ["--host", launch.host, "--port", str(launch.port)]
         argv += ["--served-model-name", launch.served_model_name]
-        if launch.revision:
-            argv += ["--revision", launch.revision]
         if launch.context:
             argv += ["--max-model-len", str(launch.context)]
         if launch.dtype:

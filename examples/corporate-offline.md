@@ -3,7 +3,7 @@
 ## Proxies
 
 Every download uses the standard environment variables, which curl, wget, uv, npm,
-git, huggingface_hub and setup-work's own downloader all honour:
+git and setup-work's own downloader all honour:
 
 ```bash
 export HTTPS_PROXY=http://proxy.corp:3128 HTTP_PROXY=http://proxy.corp:3128
@@ -14,13 +14,12 @@ Requests to local inference servers (`serve-test`, readiness checks) always bypa
 proxy. `make doctor` shows the active proxy variables with credentials masked.
 
 Custom CA bundles: set `SSL_CERT_FILE` (Python, uv), `NODE_EXTRA_CA_CERTS` (npm) and
-`REQUESTS_CA_BUNDLE` / `HF_HUB_*` as your organisation requires.
+`REQUESTS_CA_BUNDLE` as your organisation requires.
 
 ## Mirrors
 
 - PyPI: `UV_INDEX_URL=https://pypi.corp/simple` (uv) — affects `uv sync`, Aider, vLLM.
 - npm: `npm config set registry https://npm.corp/` or `NPM_CONFIG_REGISTRY`.
-- Hugging Face: `HF_ENDPOINT=https://hf-mirror.corp`.
 - Release archives (uv, Node.js, Git LFS, llama.cpp): override the `url` templates in
   `~/.config/setup-work/defaults.yaml`; checksums stay pinned, so a mirror cannot
   substitute different bytes.
@@ -40,7 +39,8 @@ $XDG_DATA_HOME/setup-work/engines/llama.cpp/downloads/llama-b11080-bin-<asset>.t
 Copy them from a connected machine (`make bootstrap` there fills the same cache) and run
 `make bootstrap` / `make engine-install` on the offline machine.
 
-Models: copy a populated `HF_HUB_CACHE` directory and set `HF_HUB_OFFLINE=1`.
+Models: map each `<id>:<variant>` to an archive on a local or NFS path in
+`corporate.yaml` (see [corp/](corp/README.md)) and run `make model-pull`.
 `make model-list` shows what is available; `make serve` never downloads anything.
 
 Planning without access to the target: run `make hardware-json > hw.json` on the target,

@@ -1,8 +1,10 @@
 #!/bin/sh
 # setup-work stage-0 bootstrap. POSIX sh, no Python required.
 #
-#  0. Optionally load team settings ($SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env)
-#     and run corporate pre-scripts ($SETUP_WORK_PRE_SCRIPTS), each confirmed.
+#  0. Optionally load team settings ($SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env),
+#     run corporate pre-scripts ($SETUP_WORK_PRE_SCRIPTS), each confirmed, and
+#     write the corporate package registries into pip.conf / .npmrc
+#     (SETUP_WORK_PYPI_* / SETUP_WORK_NPM_*, see section 0c).
 #  1. If uv is missing, obtain it from (first match):
 #       SETUP_WORK_UV_ARCHIVE   local path or hdfs:// URI of the official uv tarball
 #       SETUP_WORK_UV_FROM_PIP=1  `python3 -m pip install --user uv==<pin>` (corporate PyPI)
@@ -13,7 +15,7 @@
 # Never uses sudo, never pipes remote scripts into a shell, never edits shell
 # startup files. Honours HTTP(S)_PROXY / NO_PROXY through curl/wget.
 #
-# Usage: sh scripts/bootstrap.sh [--dry-run]
+# Usage: sh scripts/bootstrap.sh [--dry-run] [--registries-only]
 #        SETUP_WORK_DRY_RUN=1 sh scripts/bootstrap.sh
 
 set -eu
@@ -26,7 +28,7 @@ SHA_aarch64_unknown_linux_gnu="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74
 SHA_x86_64_unknown_linux_gnu="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd"
 
 say() { printf '%s\n' "$*"; }
-die() { say "error: $*" >&2; exit "${2:-1}"; }
+die() { say "error: $1" >&2; exit "${2:-1}"; }
 
 # ---- 0a. team settings: KEY=VALUE lines only, never executed as shell ---------
 load_env_file() {
@@ -59,7 +61,14 @@ BIN_DIR="${SETUP_WORK_BIN_DIR:-$HOME/.local/bin}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/setup-work"
 DRY_RUN="${SETUP_WORK_DRY_RUN:-}"
 ASSUME_YES="${SETUP_WORK_YES:-}"
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+REGISTRIES_ONLY=
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --registries-only) REGISTRIES_ONLY=1 ;;
+        *) die "unknown argument: $arg (expected --dry-run, --registries-only)" 2 ;;
+    esac
+done
 case "$DRY_RUN" in 1|true|yes) DRY_RUN=1 ;; *) DRY_RUN= ;; esac
 case "$ASSUME_YES" in 1|true|yes) ASSUME_YES=1 ;; *) ASSUME_YES= ;; esac
 
@@ -94,6 +103,119 @@ if [ -n "${SETUP_WORK_PRE_SCRIPTS:-}" ]; then
         fi
     done
     IFS=$old_ifs
+fi
+
+# ---- 0c. corporate package registries -> pip.conf / .npmrc ------------------------
+# Set in bootstrap.env (or the environment). Credentials are read from files and are
+# never printed or passed on a command line.
+#   SETUP_WORK_PYPI_INDEX         https://host/path/simple
+#   SETUP_WORK_PYPI_USER          user name in the index URL (default: token)
+#   SETUP_WORK_PYPI_AUTH_FILE     file with the password/token for the index
+#   SETUP_WORK_PYPI_TRUSTED_HOST  host pip/uv may reach without TLS verification
+#   SETUP_WORK_NPM_REGISTRY       https://host/path/
+#   SETUP_WORK_NPM_AUTH_FILE      file with the npm _authToken
+#   SETUP_WORK_NPM_CAFILE         CA bundle for the registry (preferred over the next one)
+#   SETUP_WORK_NPM_STRICT_SSL     false disables TLS verification for npm
+expand_home() {
+    case "$1" in
+        "~/"*) say "$HOME/${1#"~/"}" ;;
+        '$HOME/'*) say "$HOME/${1#'$HOME/'}" ;;
+        *) say "$1" ;;
+    esac
+}
+
+read_secret() {
+    f=$(expand_home "$1")
+    [ -r "$f" ] || die "cannot read $2 file: $f" 6
+    tr -d ' \t\r\n' < "$f"
+}
+
+setup_pypi() {
+    [ -n "${SETUP_WORK_PYPI_INDEX:-}" ] || return 0
+    conf="${PIP_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf}"
+    user="${SETUP_WORK_PYPI_USER:-token}"
+    auth="${SETUP_WORK_PYPI_AUTH_FILE:+$(expand_home "$SETUP_WORK_PYPI_AUTH_FILE")}"
+    trusted="${SETUP_WORK_PYPI_TRUSTED_HOST:-}"
+    say "configuring pip index $SETUP_WORK_PYPI_INDEX in $conf${auth:+ (credentials from $auth)}"
+    [ -n "$DRY_RUN" ] && return 0
+    if [ -n "$auth" ] && [ ! -r "$auth" ]; then die "cannot read the PyPI auth file: $auth" 6; fi
+    mkdir -p "$(dirname -- "$conf")"
+    py=$(command -v python3 || true)
+    if [ -n "$py" ]; then
+        # configparser keeps the other settings in pip.conf; the token stays off argv.
+        "$py" -I -c '
+import configparser, os, sys
+from urllib.parse import quote, urlsplit, urlunsplit
+conf, index, user, auth, trusted = sys.argv[1:6]
+if auth:
+    with open(auth) as fh:
+        token = "".join(fh.read().split())
+    u = urlsplit(index)
+    host = u.hostname + (":%d" % u.port if u.port else "")
+    netloc = quote(user, safe="") + ":" + quote(token, safe="") + "@" + host
+    index = urlunsplit((u.scheme, netloc, u.path, u.query, u.fragment))
+cp = configparser.RawConfigParser()
+cp.read(conf)
+if not cp.has_section("global"):
+    cp.add_section("global")
+cp.set("global", "index-url", index)
+if trusted:
+    cp.set("global", "trusted-host", trusted)
+tmp = conf + ".setup-work.tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as fh:
+    cp.write(fh)
+os.replace(tmp, conf)
+' "$conf" "$SETUP_WORK_PYPI_INDEX" "$user" "$auth" "$trusted" \
+            || die "failed to write $conf" 1
+    elif [ -f "$conf" ]; then
+        die "python3 is needed to update the existing $conf; edit it by hand or remove it" 3
+    else
+        idx="$SETUP_WORK_PYPI_INDEX"
+        if [ -n "$auth" ]; then
+            tok=$(read_secret "$auth" "PyPI auth")
+            idx="${idx%%://*}://$user:$tok@${idx#*://}"
+        fi
+        ( umask 077
+          { say "[global]"; say "index-url = $idx"
+            if [ -n "$trusted" ]; then say "trusted-host = $trusted"; fi; } > "$conf" ) \
+            || die "failed to write $conf" 1
+    fi
+}
+
+setup_npm() {
+    [ -n "${SETUP_WORK_NPM_REGISTRY:-}" ] || return 0
+    rc="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+    reg="$SETUP_WORK_NPM_REGISTRY"
+    case "$reg" in */) ;; *) reg="$reg/" ;; esac
+    key="//${reg#*://}:_authToken"
+    auth="${SETUP_WORK_NPM_AUTH_FILE:+$(expand_home "$SETUP_WORK_NPM_AUTH_FILE")}"
+    cafile="${SETUP_WORK_NPM_CAFILE:+$(expand_home "$SETUP_WORK_NPM_CAFILE")}"
+    strict="${SETUP_WORK_NPM_STRICT_SSL:-}"
+    say "configuring npm registry $reg in $rc${auth:+ (token from $auth)}"
+    [ -n "$DRY_RUN" ] && return 0
+    tok=
+    [ -n "$auth" ] && tok=$(read_secret "$auth" "npm auth")
+    tmp="$rc.setup-work.tmp"
+    # Replace only the keys managed here; everything else in .npmrc is kept.
+    ( umask 077
+      {
+        if [ -f "$rc" ]; then
+            awk -v k="$key=" 'index($0, "registry=") != 1 && index($0, k) != 1 &&
+                index($0, "cafile=") != 1 && index($0, "strict-ssl=") != 1' "$rc"
+        fi
+        say "registry=$reg"
+        if [ -n "$tok" ]; then say "$key=$tok"; fi
+        if [ -n "$cafile" ]; then say "cafile=$cafile"; fi
+        if [ -n "$strict" ]; then say "strict-ssl=$strict"; fi
+      } > "$tmp" ) && mv "$tmp" "$rc" || die "failed to write $rc" 1
+}
+
+setup_pypi
+setup_npm
+if [ -n "$REGISTRIES_ONLY" ]; then
+    say "registries configured"
+    exit 0
 fi
 
 # ---- pip.conf -> uv (uv ignores pip.conf) --------------------------------------

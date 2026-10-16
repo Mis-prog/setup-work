@@ -116,7 +116,6 @@ class Candidate:
     gpu_memory_utilization: float | None = None
     tensor_split: list[float] | None = None
     dtype: str | None = None
-    gated: bool = False
 
     @property
     def ref(self) -> str:
@@ -155,7 +154,6 @@ class RecommendRequest:
     tensor_parallel: int | None = None
     gpu_memory_utilization: float = 0.90
     max_results: int = 5
-    include_gated: bool = True
 
 
 @dataclass
@@ -252,7 +250,6 @@ def evaluate_variant(
         gpu_memory_utilization=plan.gpu_memory_utilization,
         tensor_split=plan.tensor_split,
         dtype=compat.dtype,
-        gated=model.gated,
     )
     return cand, []
 
@@ -273,8 +270,6 @@ def recommend(cfg: Config, hw: HardwareInfo, req: RecommendRequest) -> Recommend
         elif "embedding" in model.workloads or (
             req.task not in model.workloads and model.quality.get(req.task, 0) <= 0
         ):
-            continue
-        if not req.include_gated and model.gated:
             continue
         for engine_name in engines:
             variants = [v for v in model.variants if engine_name in v.engines]

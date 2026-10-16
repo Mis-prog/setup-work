@@ -19,7 +19,7 @@ make recommend TASK=coding CONTEXT=16384
 #  2  qwen2.5-coder-14b:q6_k     llama.cpp  q6_k    14.9 GiB  full-gpu ...
 
 make engine-install ENGINE=llama.cpp          # pinned b11080 macos-arm64, sha256-verified
-make model-pull MODEL=qwen2.5-coder-7b:q4_k_m # ~4.7 GB
+make model-pull MODEL=qwen2.5-coder-7b:q4_k_m # ~4.7 GB, from the artifact mapped in corporate.yaml
 make serve MODEL=qwen2.5-coder-7b:q4_k_m CONTEXT=16384
 make serve-test
 make serve-stop

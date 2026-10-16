@@ -10,7 +10,7 @@
 #            (e.g. UV_PYTHON_INSTALL_MIRROR, NPM_CONFIG_REGISTRY, SSL_CERT_FILE)
 # bridge_pip_conf: translate pip.conf index settings into UV_* for uv
 # trusted_git_hosts: harness builds from these hosts do not need --allow-build
-# models / engines / tools: artifact sources replacing Hugging Face / GitHub downloads
+# models / engines / tools: artifact sources (models come only from here)
 
 hdfs:
   cli: hdfs

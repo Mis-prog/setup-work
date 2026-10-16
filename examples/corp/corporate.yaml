@@ -12,15 +12,13 @@ hdfs:
 # Корпоративные скрипты настройки. Запускаются `make corp-setup` (и первым шагом
 # `make bootstrap`), каждый показывается и подтверждается; пропускается, если
 # все файлы из `creates` уже существуют.
-scripts:
-  - name: pypi
-    description: настроить корпоративный PyPI (pip.conf)
-    argv: [/opt/corp/bin/setup-pypi.sh]
-    creates: [~/.config/pip/pip.conf]
-  - name: npm
-    description: настроить корпоративный npm registry (.npmrc)
-    argv: [/opt/corp/bin/setup-npm.sh]
-    creates: [~/.npmrc]
+# PyPI и npm скрипты не нужны: они настраиваются встроенно через SETUP_WORK_PYPI_* /
+# SETUP_WORK_NPM_* в bootstrap.env (`make corp-registries`).
+scripts: []
+#  - name: vpn-certs
+#    description: установить корпоративные сертификаты
+#    argv: [bash, /opt/corp/bin/install-certs.sh]
+#    creates: [~/.local/share/corp-ca.crt]
 
 # Несекретные переменные для всех команд setup-work (пользовательское окружение важнее).
 env:

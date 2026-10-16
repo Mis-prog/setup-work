@@ -233,7 +233,7 @@ def test_model_validation_rules():
                 ]
             )
         )
-    with pytest.raises(ValidationError, match="invalid Hugging Face repository"):
+    with pytest.raises(ValidationError, match="invalid repository id"):
         ModelSpec.model_validate(
             _model(
                 variants=[

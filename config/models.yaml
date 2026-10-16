@@ -452,7 +452,6 @@ models:
     family: llama3.1
     display_name: Llama 3.1 8B Instruct
     license: llama3.1
-    gated: true
     architecture: dense
     parameters_b: 8.03
     workloads: [general, agents]
@@ -487,7 +486,6 @@ models:
     family: gemma3
     display_name: Gemma 3 12B IT
     license: gemma
-    gated: true
     architecture: dense
     parameters_b: 12.2
     workloads: [general, reasoning]

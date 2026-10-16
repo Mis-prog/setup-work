@@ -12,7 +12,9 @@ you cannot run `sudo`.
 ## 0. Requirements on the server
 
 - `git`, `make`, `tar`, and `curl` *or* `wget` (present on almost every server).
-- Outbound HTTPS to github.com, nodejs.org, pypi.org and huggingface.co (or a proxy).
+- Outbound HTTPS to github.com, nodejs.org and pypi.org (or a proxy).
+- Model weights published as corporate artifacts (HDFS, NFS or HTTPS), mapped in
+  `corporate.yaml` — see [corp/](corp/README.md).
 
 ## 1. Clone and point heavy data at the big volume
 
@@ -21,8 +23,7 @@ git clone https://github.com/<you>/setup-work.git ~/setup-work
 cd ~/setup-work
 
 # Keep weights and engines off the small home disk (optional).
-export HF_HOME=/data/$USER/hf
-export XDG_DATA_HOME=/data/$USER/share      # engines, harnesses, Node.js, uv
+export XDG_DATA_HOME=/data/$USER/share      # models, engines, harnesses, Node.js, uv
 export PATH="$HOME/.local/bin:$PATH"         # where setup-work links binaries
 ```
 
@@ -61,10 +62,8 @@ will not be offered AWQ or FP8 checkpoints.
 make engine-install ENGINE=vllm          # Python 3.12 venv in $XDG_DATA_HOME/setup-work/engines/vllm
 make engine-install ENGINE=llama.cpp     # prebuilt CUDA build matching the driver
 
-make model-pull MODEL=qwen3-coder-30b-a3b:fp8   # asks before large downloads; resumable
+make model-pull MODEL=qwen3-coder-30b-a3b:fp8   # from the artifact mapped in corporate.yaml
 ```
-
-Gated models (Llama, Gemma) need `hf auth login` or `HF_TOKEN` in the environment.
 
 ## 5. Serve on localhost and reach it through SSH
 

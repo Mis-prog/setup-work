@@ -11,3 +11,4 @@ dist/
 !.env.example
 *.key
 .DS_Store
+*.HEIC

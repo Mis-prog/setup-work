@@ -19,7 +19,9 @@ HDFS, PyPI и npm настраиваются корпоративными скр
    - `harnesses.yaml`: реальные `repository` и `ref` (тег или commit) для qwen-code,
      opencode, pi, hermes, deepseek. Проверьте команды `build` и пути `binaries`
      под ваши форки;
-   - `bootstrap.env`: как получить uv без GitHub (корпоративный PyPI или HDFS);
+   - `bootstrap.env`: адреса корпоративных PyPI и npm и пути к файлам с токенами
+     (`SETUP_WORK_PYPI_*`, `SETUP_WORK_NPM_*`), а также как получить uv без GitHub
+     (корпоративный PyPI или HDFS);
    - `models.yaml`: внутренние fine-tune модели, если они есть.
 3. Проверьте конфиг:
    ```bash
@@ -89,7 +91,7 @@ qwen    # / opencode / pi / hermes / deepseek
 
 | Шаг | Поведение |
 |---|---|
-| `make bootstrap` (stage 0, без Python) | читает `$SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env` (только `KEY=VALUE`, секреты отклоняются), запускает `SETUP_WORK_PRE_SCRIPTS` с подтверждением, берёт uv из HDFS/PyPI/GitHub, передаёт `index-url` из pip.conf в uv |
+| `make bootstrap` (stage 0, без Python) | читает `$SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env` (только `KEY=VALUE`, секреты отклоняются), запускает `SETUP_WORK_PRE_SCRIPTS` с подтверждением, пишет `pip.conf` и `.npmrc` из `SETUP_WORK_PYPI_*`/`SETUP_WORK_NPM_*` (токены из файлов, права 600, прочие настройки сохраняются), берёт uv из HDFS/PyPI/GitHub, передаёт `index-url` из pip.conf в uv |
 | uv и `uv.lock` | `uv.lock` содержит ссылки на pypi.org; при корпоративном индексе lock пересобирается против него (версии из lock сохраняются как предпочтительные) |
 | Корпоративные скрипты | `make corp-setup`: каждый показывается и подтверждается; пропускается, если файлы из `creates` уже есть |
 | pip.conf → uv | uv не читает pip.conf: `index-url`, `extra-index-url`, `trusted-host` и `cert` превращаются в `UV_*` и `SSL_CERT_FILE` для всех вызовов uv |
@@ -103,7 +105,7 @@ qwen    # / opencode / pi / hermes / deepseek
 ```bash
 make corp-status          # HDFS CLI, Kerberos, pip/uv/npm индексы, сколько артефактов
 make corp-env             # export-строки корпоративного окружения (для CI/шелла)
-make model-list           # распакованные артефакты + HF-кэш
+make model-list           # распакованные модели
 make harness-doctor NAME=qwen-code
 ```
 
@@ -114,4 +116,6 @@ make harness-doctor NAME=qwen-code
 | `not enough disk space` | нужно ~2× размера архива; задайте `SETUP_WORK_MODEL_DIR` или `XDG_DATA_HOME` на большой том |
 | `the vLLM venv was built with Python 3.X … not available` | `uv python install 3.X` (с `UV_PYTHON_INSTALL_MIRROR`) или соберите venv на той же версии |
 | `uv sync failed` | индекс: `make corp-env`, `UV_DEFAULT_INDEX`, pip.conf; прокси |
+| `cannot read … auth file` | проверьте путь к файлу с токеном в `bootstrap.env` (`SETUP_WORK_PYPI_AUTH_FILE`, `SETUP_WORK_NPM_AUTH_FILE`) |
+| сменился токен | `make corp-registries` перезапишет `pip.conf` и `.npmrc` |
 | харнес: `still contains the CHANGE-ME placeholder` | заполните `repository`/`ref` в командном `harnesses.yaml` |

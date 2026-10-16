@@ -31,8 +31,6 @@ export SETUP_WORK_PROFILE        = $(PROFILE)
 export SETUP_WORK_WITH_OPTIONAL  = $(WITH_OPTIONAL)
 export SETUP_WORK_ALLOW_SUDO     = $(ALLOW_SUDO)
 export SETUP_WORK_ALLOW_DOWNLOADS = $(ALLOW_DOWNLOADS)
-export SETUP_WORK_REVISION       = $(REVISION)
-export SETUP_WORK_REMOTE         = $(REMOTE)
 export SETUP_WORK_INSTANCE       = $(INSTANCE)
 export SETUP_WORK_HOST           = $(HOST)
 export SETUP_WORK_PORT           = $(PORT)
@@ -69,7 +67,7 @@ endef
 	harness-list harness-install harness-update harness-remove harness-doctor \
 	serve serve-auto serve-stop serve-status serve-logs serve-test \
 	setup profiles profile-show clean test lint format check sync \
-	corp-setup corp-status corp-env
+	corp-setup corp-registries corp-status corp-env
 
 ##@ Общее
 help: ## Показать эту справку
@@ -135,31 +133,34 @@ engine-status: $(VENV_STAMP) ## Показать установленные/по
 corp-setup: $(VENV_STAMP) ## Запустить корпоративные скрипты настройки (pip.conf, .npmrc, ...) с подтверждением
 	@$(CLI) corp setup
 
+corp-registries: ## Записать корпоративные PyPI/npm в pip.conf и .npmrc (SETUP_WORK_PYPI_*/NPM_* из bootstrap.env)
+	@sh scripts/bootstrap.sh --registries-only
+
 corp-status: $(VENV_STAMP) ## HDFS-клиент, Kerberos-тикет, зеркала, настроенные артефакты
 	@$(CLI) corp status
 
 corp-env: $(VENV_STAMP) ## Вывести строки export для корпоративного окружения
 	@$(CLI) corp env
 
-##@ Модели (ничего не скачивается, кроме model-pull)
+##@ Модели (ничего не загружается, кроме model-pull)
 models: $(VENV_STAMP) ## Каталог моделей [TASK=]
 	@$(CLI) models
 
 recommend: $(VENV_STAMP) ## Подобрать модели [TASK= CONTEXT= ENGINE= CONCURRENCY= TP= EXPLAIN=1]
 	@$(CLI) recommend
 
-model-pull: $(VENV_STAMP) ## Скачать веса: MODEL=id:variant|org/repo [SOURCE=corporate|hf REVISION=]
+model-pull: $(VENV_STAMP) ## Получить веса из корпоративного артефакта: MODEL=id:variant
 	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
 	@$(CLI) model pull
 
-model-list: $(VENV_STAMP) ## Список моделей в кэше
+model-list: $(VENV_STAMP) ## Список распакованных моделей
 	@$(CLI) model list
 
-model-info: $(VENV_STAMP) ## Метаданные модели: MODEL=id[:variant] [REMOTE=1]
+model-info: $(VENV_STAMP) ## Метаданные модели: MODEL=id[:variant]
 	$(call require,MODEL,MODEL,qwen3-8b)
 	@$(CLI) model info
 
-model-remove: $(VENV_STAMP) ## Удалить модель из кэша: MODEL=id:variant|org/repo
+model-remove: $(VENV_STAMP) ## Удалить распакованную модель: MODEL=id:variant
 	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
 	@$(CLI) model remove
 

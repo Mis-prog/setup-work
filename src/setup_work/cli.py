@@ -25,7 +25,7 @@ from . import harness as hz
 from .config import Config
 from .diagnostics import detect_environment
 from .engines import ENGINES, get_engine
-from .errors import CheckFailedError, ExitCode, SetupWorkError, UsageError
+from .errors import CheckFailedError, ExitCode, NotFoundError, SetupWorkError, UsageError
 from .hardware import HardwareInfo, detect
 from .inference import ServeOptions, ServerManager, plan_launch
 from .memory import gib
@@ -83,7 +83,7 @@ class State:
     def hw(self) -> HardwareInfo:
         if self._hw is None:
             cfg = self.cfg
-            paths = [cfg.data_dir, hub.cache_dir(cfg), Path.home()]
+            paths = [cfg.data_dir, cfg.models_dir, Path.home()]
             self._hw = detect(paths)
         return self._hw
 
@@ -569,7 +569,7 @@ def models_cmd(
         )
         vs = ", ".join(f"{v.id}[{'L' if v.engines == ['llama.cpp'] else 'V'}]" for v in m.variants)
         t.add_row(
-            mid + (" 🔒" if m.gated else ""),
+            mid,
             params,
             m.architecture,
             str(m.context_length),
@@ -577,10 +577,7 @@ def models_cmd(
             vs,
         )
     console.print(t)
-    console.print(
-        "[dim]L = llama.cpp (GGUF), V = vLLM (safetensors); 🔒 = gated on Hugging Face. "
-        "Use MODEL=<id>:<variant>.[/]"
-    )
+    console.print("[dim]L = llama.cpp (GGUF), V = vLLM (safetensors). Use MODEL=<id>:<variant>.[/]")
 
 
 @app.command("recommend")
@@ -646,7 +643,7 @@ def recommend_cmd(
             mem = gib(c.total_bytes) + (f" ×{c.tensor_parallel}" if c.tensor_parallel > 1 else "")
             t.add_row(
                 str(i),
-                c.ref + (" 🔒" if c.gated else ""),
+                c.ref,
                 c.engine,
                 c.quantization,
                 mem,
@@ -687,129 +684,68 @@ def recommend_cmd(
 
 @model_app.command("pull")
 def model_pull(
-    model: str = typer.Argument(..., envvar="SETUP_WORK_MODEL", help="id:variant or org/repo"),
-    revision: str = typer.Option(None, envvar="SETUP_WORK_REVISION", help="Branch, tag or commit."),
-    source: str = typer.Option(
-        "auto", "--source", envvar="SETUP_WORK_SOURCE", help="auto | corporate | hf"
-    ),
-    no_verify: bool = typer.Option(False, "--no-verify", help="Skip sha256 verification."),
+    model: str = typer.Argument(..., envvar="SETUP_WORK_MODEL", help="id:variant"),
     json_out: bool = _json_opt(),
 ) -> None:
-    """Download model weights: corporate artifact (HDFS/zip) or Hugging Face cache."""
+    """Fetch and unpack model weights from a corporate artifact (HDFS, NFS, HTTPS)."""
     cfg = STATE.cfg
     _set_json(json_out)
-    if source not in ("auto", "corporate", "hf"):
-        raise UsageError(f"unknown source {source!r}", hint="auto, corporate or hf")
-    if not ("/" in model and ":" not in model):
-        spec, variant = resolve(cfg, model)
-        if variant is None:
-            raise UsageError(
-                f"specify which variant of {model} to download",
-                hint="variants: " + ", ".join(f"{model}:{v.id}" for v in spec.variants),
-            )
-        art = hub.model_artifact(cfg, model.split(":")[0], variant)
-        if source == "corporate" and art is None:
-            raise SetupWorkError(
-                f"no corporate artifact configured for {model}",
-                hint="map it in corporate.yaml under `models:` (see examples/corp/)",
-            )
-        if art is not None and source != "hf":
-            entry = hub.pull_artifact(cfg, model.split(":")[0], variant, art, STATE.runner)
-            if STATE.json:
-                emit_json({"ref": model, "source": art.uri, "path": str(entry)})
-            elif not STATE.runner.dry_run:
-                console.print(f"{OK} {model} available at {entry}")
-            return
-    plan = hub.plan_pull(cfg, model, revision)
-    if STATE.json and STATE.runner.dry_run:
-        emit_json(plan.to_dict())
-        return
-    STATE.runner.info(
-        f"{plan.repository}@{(plan.resolved_revision or plan.revision or 'main')[:12]}: "
-        f"{len(plan.files)} file(s), {gib(plan.total_bytes)} total, "
-        f"{gib(plan.cached_bytes)} cached, "
-        f"{gib(plan.needed_bytes)} to download; {gib(plan.free_bytes)} free in {plan.cache_dir}"
-    )
-    path = hub.pull(cfg, plan, STATE.runner, verify=False if no_verify else None)
+    spec, variant = resolve(cfg, model)
+    if variant is None:
+        raise UsageError(
+            f"specify which variant of {model} to fetch",
+            hint="variants: " + ", ".join(f"{model}:{v.id}" for v in spec.variants),
+        )
+    model_id = model.split(":")[0]
+    art = hub.require_artifact(cfg, model_id, variant)
+    entry = hub.pull_artifact(cfg, model_id, variant, art, STATE.runner)
     if STATE.json:
-        emit_json({**plan.to_dict(), "path": str(path)})
+        emit_json({"ref": model, "source": art.uri, "path": str(entry)})
     elif not STATE.runner.dry_run:
-        console.print(f"{OK} {model} available at {path}")
+        console.print(f"{OK} {model} available at {entry}")
 
 
 @model_app.command("list")
 def model_list(json_out: bool = _json_opt()) -> None:
-    """List models present in the local cache."""
+    """List unpacked models."""
     cfg = STATE.cfg
-    repos = hub.list_cached(cfg)
     arts = hub.list_artifact_models(cfg)
     if _set_json(json_out):
-        emit_json(
-            {
-                "cache_dir": str(hub.cache_dir(cfg)),
-                "repos": [r.__dict__ for r in repos],
-                "artifact_dir": str(cfg.models_dir),
-                "artifacts": arts,
-            }
-        )
+        emit_json({"artifact_dir": str(cfg.models_dir), "artifacts": arts})
         return
-    if arts:
-        at = Table(
-            title=f"Corporate artifacts ({cfg.models_dir})", show_edge=False, title_justify="left"
-        )
-        for c in ("model:variant", "size", "source", "installed"):
-            at.add_column(c)
-        for a in arts:
-            at.add_row(
-                a["ref"], gib(a["size_bytes"]), a["uri"] or "", (a["installed_at"] or "")[:19]
-            )
-        console.print(at)
-    console.print(f"cache: {hub.cache_dir(cfg)}")
-    if not repos and arts:
-        return
-    if not repos:
+    if not arts:
         console.print(
-            "no models cached. Try: make recommend, then make model-pull MODEL=<id:variant>"
+            f"no models in {cfg.models_dir}. "
+            "Try: make recommend, then make model-pull MODEL=<id:variant>"
         )
         return
-    t = Table(show_edge=False)
-    for c in ("repository", "size", "revisions", "catalog refs"):
+    t = Table(title=f"Models ({cfg.models_dir})", show_edge=False, title_justify="left")
+    for c in ("model:variant", "size", "source", "installed"):
         t.add_column(c)
-    for r in repos:
-        t.add_row(r.repo_id, gib(r.size_bytes), ",".join(r.revisions), ", ".join(r.catalog_refs))
+    for a in arts:
+        t.add_row(a["ref"], gib(a["size_bytes"]), a["uri"] or "", (a["installed_at"] or "")[:19])
     console.print(t)
 
 
 @model_app.command("info")
 def model_info(
     model: str = typer.Argument(..., envvar="SETUP_WORK_MODEL"),
-    remote: bool = typer.Option(
-        False,
-        "--remote",
-        envvar="SETUP_WORK_REMOTE",
-        help="Query Hugging Face for current file sizes.",
-    ),
     json_out: bool = _json_opt(),
 ) -> None:
-    """Show catalog metadata (and optionally remote file sizes)."""
+    """Show catalog metadata and which variants are available locally."""
     cfg = STATE.cfg
-    spec, variant = resolve(cfg, model)
+    spec, _ = resolve(cfg, model)
     data: dict[str, Any] = {"id": model.split(":")[0], **spec.model_dump()}
     for v in data["variants"]:
         var = spec.variant(v["id"])
         v["cached"] = bool(var and hub.local_model(cfg, data["id"], var))
         art = hub.model_artifact(cfg, data["id"], var) if var else None
         v["artifact"] = art.uri if art else None
-    if remote and variant:
-        data["remote"] = hub.plan_pull(cfg, model).to_dict()
     if _set_json(json_out):
         emit_json(data)
         return
     a = spec.attention
-    console.print(
-        f"[bold]{spec.display_name}[/] ({data['id']}) · license {spec.license}"
-        + (" · gated" if spec.gated else "")
-    )
+    console.print(f"[bold]{spec.display_name}[/] ({data['id']}) · license {spec.license}")
     console.print(
         f"  {spec.architecture}, {spec.parameters_b:g}B params"
         + (f", {spec.active_parameters_b:g}B active" if spec.active_parameters_b else "")
@@ -838,19 +774,14 @@ def model_info(
             OK if v["cached"] else "",
         )
     console.print(t)
-    if "remote" in data:
-        r = data["remote"]
-        console.print(
-            f"remote: {len(r['files'])} files, {gib(r['total_bytes'])} at {r['resolved_revision']}"
-        )
 
 
 @model_app.command("remove")
 def model_remove(model: str = typer.Argument(..., envvar="SETUP_WORK_MODEL")) -> None:
-    """Delete a cached model repository (asks for confirmation)."""
+    """Delete an unpacked model (asks for confirmation)."""
     freed = hub.remove_artifact_model(STATE.cfg, model, STATE.runner)
     if freed is None:
-        freed = hub.remove(STATE.cfg, model, STATE.runner)
+        raise NotFoundError(f"{model} is not unpacked locally", hint="see `make model-list`")
     if not STATE.runner.dry_run:
         console.print(f"{OK} freed {gib(freed)}")
 
@@ -1011,7 +942,6 @@ _SERVE_OPTS = dict(
     threads=typer.Option(None, envvar="SETUP_WORK_THREADS"),
     kv_cache_dtype=typer.Option(None, envvar="SETUP_WORK_KV_CACHE_DTYPE"),
     served_name=typer.Option(None, "--served-name", envvar="SETUP_WORK_SERVED_NAME"),
-    revision=typer.Option(None, envvar="SETUP_WORK_REVISION"),
     force=typer.Option(
         False,
         "--force",
@@ -1028,7 +958,7 @@ _SERVE_OPTS = dict(
 @app.command("serve")
 def serve_cmd(
     model: str = typer.Argument(
-        ..., envvar="SETUP_WORK_MODEL", help="id[:variant], org/repo (vLLM) or path to .gguf"
+        ..., envvar="SETUP_WORK_MODEL", help="id[:variant], path to .gguf or a model directory"
     ),
     engine: str = _SERVE_OPTS["engine"],
     name: str = _SERVE_OPTS["name"],
@@ -1042,7 +972,6 @@ def serve_cmd(
     threads: int = _SERVE_OPTS["threads"],
     kv_cache_dtype: str = _SERVE_OPTS["kv_cache_dtype"],
     served_name: str = _SERVE_OPTS["served_name"],
-    revision: str = _SERVE_OPTS["revision"],
     force: bool = _SERVE_OPTS["force"],
     detach: bool = _SERVE_OPTS["detach"],
     plan_only: bool = _SERVE_OPTS["plan_only"],
@@ -1076,7 +1005,6 @@ def serve_cmd(
         threads=threads,
         kv_cache_dtype=kv_cache_dtype,
         served_model_name=served_name,
-        revision=revision,
         force=force,
         extra_args=extra,
     )
@@ -1352,7 +1280,7 @@ def setup_cmd(
         False,
         "--allow-downloads",
         envvar="SETUP_WORK_ALLOW_DOWNLOADS",
-        help="Download the profile's models.pull list.",
+        help="Fetch the profile's models.pull list from artifacts.",
     ),
     json_out: bool = _json_opt(),
 ) -> None:
@@ -1408,7 +1336,11 @@ def setup_cmd(
     r.info("\n[bold]4. Models[/]")
     if rp.model_pull and allow_downloads:
         for ref in rp.model_pull:
-            hub.pull(cfg, hub.plan_pull(cfg, ref), r)
+            _, var = resolve(cfg, ref)
+            if var is None:
+                raise UsageError(f"profile model {ref} must name a variant (<id>:<variant>)")
+            mid = ref.split(":")[0]
+            hub.pull_artifact(cfg, mid, var, hub.require_artifact(cfg, mid, var), r)
     elif rp.model_pull:
         r.info(
             f"  skipped {len(rp.model_pull)} model(s): pass --allow-downloads (ALLOW_DOWNLOADS=1)"

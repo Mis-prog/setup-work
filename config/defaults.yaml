@@ -10,8 +10,6 @@ paths:
   data_dir: ${XDG_DATA_HOME:-~/.local/share}/setup-work
   state_dir: ${XDG_STATE_HOME:-~/.local/state}/setup-work
   bin_dir: ${SETUP_WORK_BIN_DIR:-~/.local/bin}
-  # null -> respect HF_HUB_CACHE / HF_HOME / huggingface_hub defaults.
-  model_cache_dir: null
 
 inference:
   host: 127.0.0.1
@@ -39,8 +37,6 @@ recommend:
 downloads:
   # Ask for confirmation before downloading more than this many GiB.
   confirm_above_gb: 1.0
-  # Verify sha256 of LFS files against Hugging Face metadata after download.
-  verify_checksums: true
 
 # Pinned user-space tool installers. Every artifact is checked against its sha256.
 # Checksums were taken from the official release pages (2026-10-15).

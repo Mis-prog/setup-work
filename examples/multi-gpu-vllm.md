@@ -17,7 +17,7 @@ On the server itself:
 make doctor
 make engine-install ENGINE=vllm
 make recommend TASK=agents CONTEXT=32768 CONCURRENCY=16 ENGINE=vllm
-make model-pull MODEL=qwen3-32b:bf16
+make model-pull MODEL=qwen3-32b:bf16           # from the artifact mapped in corporate.yaml
 make serve MODEL=qwen3-32b:bf16 ENGINE=vllm CONTEXT=32768 CONCURRENCY=16 PLAN=1   # inspect
 make serve MODEL=qwen3-32b:bf16 ENGINE=vllm CONTEXT=32768 CONCURRENCY=16
 make serve-test

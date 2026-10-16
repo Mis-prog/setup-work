@@ -49,7 +49,6 @@ class PathsConfig(Strict):
     data_dir: str
     state_dir: str
     bin_dir: str
-    model_cache_dir: str | None = None
 
 
 class InferenceDefaults(Strict):
@@ -72,7 +71,6 @@ class RecommendDefaults(Strict):
 
 class DownloadDefaults(Strict):
     confirm_above_gb: float = Field(1.0, ge=0)
-    verify_checksums: bool = True
 
 
 class ToolPin(Strict):
@@ -151,10 +149,9 @@ class Variant(Strict):
     format: Literal["safetensors", "gguf"]
     quantization: str = "none"
     dtype: Literal["bf16", "fp16", "fp32"] | None = None
-    repository: str | None = None  # Hugging Face repo id
+    repository: str | None = None  # upstream repo id (org/name), reference only
     source: str | None = None  # corporate artifact URI (hdfs://, /path, https://)
     sha256: str | None = None  # of the artifact archive, when `source` is used
-    revision: str | None = None
     files: list[str] | None = None
     size_gb: float = Field(gt=0)
     engines: list[str]
@@ -166,7 +163,7 @@ class Variant(Strict):
         if v is None:
             return v
         if not re.fullmatch(r"[A-Za-z0-9][\w.-]*/[\w.-]+", v):
-            raise ValueError(f"invalid Hugging Face repository id {v!r}")
+            raise ValueError(f"invalid repository id {v!r}; expected org/name")
         return v
 
     @field_validator("quantization")
@@ -196,7 +193,7 @@ class Variant(Strict):
         if self.quantization == "none" and self.dtype is None:
             raise ValueError("unquantised variants must declare dtype")
         if not self.repository and not self.source:
-            raise ValueError("a variant needs a Hugging Face `repository` or an artifact `source`")
+            raise ValueError("a variant needs an upstream `repository` or an artifact `source`")
         if self.source:
             validate_artifact_uri(self.source)
         return self
@@ -214,7 +211,6 @@ class ModelSpec(Strict):
     family: str
     display_name: str
     license: str
-    gated: bool = False
     architecture: Literal["dense", "moe"]
     parameters_b: float = Field(gt=0)
     active_parameters_b: float | None = Field(None, gt=0)
@@ -773,11 +769,6 @@ class Config:
     def tools_dir(self) -> Path:
         return self.data_dir / "tools"
 
-    @property
-    def model_cache_dir(self) -> Path | None:
-        v = self.defaults.paths.model_cache_dir or os.environ.get("SETUP_WORK_MODEL_CACHE")
-        return expand_path(v) if v else None
-
     def as_dict(self) -> dict[str, Any]:
         return {
             "builtin_dir": str(self.builtin_dir),
@@ -790,7 +781,7 @@ class Config:
                 "bin_dir": str(self.bin_dir),
                 "harness_dir": str(self.harness_dir),
                 "engines_dir": str(self.engines_dir),
-                "model_cache_dir": str(self.model_cache_dir) if self.model_cache_dir else None,
+                "models_dir": str(self.models_dir),
             },
             "defaults": self.defaults.model_dump(by_alias=True),
         }

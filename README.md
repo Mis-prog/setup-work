@@ -121,12 +121,12 @@ make serve-stop
 | `engine-install` / `engine-status` | llama.cpp / vLLM (корпоративный артефакт или зафиксированный релиз) | `ENGINE SOURCE` |
 | `models` | Каталог | `TASK` |
 | `recommend` | Ранжированные рекомендации с объяснениями | `TASK CONTEXT ENGINE CONCURRENCY TP KV_CACHE_DTYPE LIMIT EXPLAIN HARDWARE` |
-| `model-pull` / `-list` / `-info` / `-remove` | Веса из корпоративных артефактов или кэша HF | `MODEL SOURCE REVISION REMOTE` |
+| `model-pull` / `-list` / `-info` / `-remove` | Веса из корпоративных артефактов (HDFS, NFS, HTTPS) | `MODEL` |
 | `serve` | Запустить сервер (по умолчанию в фоне) | `MODEL ENGINE CONTEXT CONCURRENCY TP GPU_UTIL GPU_LAYERS THREADS HOST PORT INSTANCE SERVED_NAME ENGINE_ARGS FOREGROUND PLAN FORCE PROFILE` |
 | `serve-auto` | Лучшая *уже скачанная* модель для задачи | `TASK ENGINE CONTEXT ENGINE_ARGS` |
 | `serve-stop` / `-status` / `-logs` / `-test` | Жизненный цикл | `INSTANCE LINES FOLLOW URL` |
 | `harness-list` / `-install` / `-update` / `-remove` / `-doctor` | Coding-агенты | `NAME VERSION REF ALLOW_BUILD` |
-| `corp-setup` / `corp-status` / `corp-env` | Корпоративные скрипты, статус HDFS/Kerberos/зеркал, строки export | |
+| `corp-setup` / `corp-registries` / `corp-status` / `corp-env` | Корпоративные скрипты, запись PyPI/npm в pip.conf/.npmrc, статус HDFS/Kerberos/зеркал, строки export | |
 | `setup` / `profiles` / `profile-show` | Профили | `PROFILE WITH_OPTIONAL ALLOW_DOWNLOADS` |
 | `test` / `lint` / `format` / `check` | Разработка | |
 | `clean` | Артефакты сборки и кэши установщика (модели и харнессы не трогает) | |
@@ -152,7 +152,7 @@ make serve-stop
   ~2/3 RAM (3/4 при объёме больше 36 ГБ) или читается из `sysctl iogpu.wired_limit_mb`,
   если вы его задали.
 - Поддерживаемые точности (fp16/bf16/int8/fp8/fp4 по compute capability).
-- Свободное место на диске для каталога данных и кэша Hugging Face.
+- Свободное место на диске для каталога данных и каталога моделей.
 
 Каждая проверка необязательна. Отсутствующие инструменты дают заметки, а не падения.
 
@@ -166,9 +166,11 @@ VRAM показывается по каждому устройству отде�
 
 ## Подбор модели
 
-В каталог (`config/models.yaml`) входят только модели, метаданные которых проверены на
-Hugging Face Hub: геометрия внимания из `config.json`, реальные размеры артефактов и
-имена GGUF-файлов. У каждой модели есть **варианты** — конкретные скачиваемые артефакты
+В каталог (`config/models.yaml`) входят только модели с проверенными метаданными:
+геометрия внимания из `config.json`, реальные размеры артефактов и имена GGUF-файлов.
+Поле `repository` — справочный идентификатор исходного репозитория; сами веса
+setup-work берёт только из корпоративных артефактов (см.
+[Корпоративные окружения](#корпоративные-окружения)). У каждой модели есть **варианты** — конкретные скачиваемые артефакты
 с форматом, квантизацией и целевым движком. Это богаче простого списка `formats:`,
 потому что «Qwen3-8B в AWQ для vLLM» и «Qwen3-8B Q4_K_M GGUF для llama.cpp» — разные
 репозитории с разными размерами и требованиями к ядрам.
@@ -235,7 +237,7 @@ make serve MODEL=qwen3-8b:q4_k_m                       # движок опред
 make serve MODEL=qwen3-32b ENGINE=vllm                 # лучший подходящий вариант для vLLM
 make serve MODEL=qwen3-32b:awq ENGINE=vllm TP=2 PORT=8001 INSTANCE=big
 make serve MODEL=/models/custom.gguf                   # локальный GGUF (влезание заранее не проверяется)
-make serve MODEL=Org/Repo ENGINE=vllm                  # репозиторий HF из кэша, не из каталога
+make serve MODEL=/models/custom-dir ENGINE=vllm        # локальный каталог модели (config.json + *.safetensors)
 make serve MODEL=qwen3-8b:q4_k_m PLAN=1                # только вывести план и команду
 make serve-auto TASK=coding                            # лучшая уже скачанная модель
 make serve-status ; make serve-logs FOLLOW=1 ; make serve-test ; make serve-stop
@@ -245,7 +247,7 @@ make serve-status ; make serve-logs FOLLOW=1 ; make serve-test ; make serve-stop
 
 - **Проверяет** совместимость движка и влезание в память до запуска. Если по оценке
   план не влезает, запуск отклоняется (`FORCE=1` это обходит).
-- **Никогда не скачивает.** При отсутствии весов выдаётся ошибка с командой
+- **Никогда не загружает веса сам.** При их отсутствии выдаётся ошибка с командой
   `make model-pull`, которую нужно выполнить.
 - **Выводит итоговую командную строку.** Секреты скрыты.
 - **По умолчанию слушает `127.0.0.1`.** Любой другой адрес требует подтверждения и
@@ -391,7 +393,8 @@ make serve MODEL=qwen3-8b:q4_k_m PROFILE=local-llm # параметры инфе
   промежуточный каталог, атомарно и с проверкой на выход за пределы каталога.
   Файл-маркер позволяет повторным запускам переиспользовать результат.
 - **Модели:** сопоставьте `"<id>:<variant>"` с архивом или задайте внутренним моделям
-  `source:` вместо `repository` с Hugging Face. `serve` и `recommend` работают без
+  `source:`. Это единственный способ получить веса: `make model-pull` без настроенного
+  артефакта завершается ошибкой с подсказкой. `serve` и `recommend` работают без
   изменений.
 - **Движки:** готовая сборка llama.cpp или venv vLLM, запакованный в zip как обычный
   каталог. После распаковки venv чинится: базовый интерпретатор, ссылки `bin/python*`,
@@ -399,6 +402,10 @@ make serve MODEL=qwen3-8b:q4_k_m PROFILE=local-llm # параметры инфе
 - **Харнессы из внутренних форков:** многошаговые команды `build` и бинарники,
   доступные через сгенерированные обёртки (`{name, path, interpreter: node|bun|python|sh}`).
   `requires_commands` проверяет наличие инструментов вроде `bun`.
+- **Корпоративные PyPI и npm:** `SETUP_WORK_PYPI_*` и `SETUP_WORK_NPM_*` в
+  `bootstrap.env`. Stage 0 сам пишет `pip.conf` и `.npmrc`: токены читаются из файлов,
+  не печатаются и не попадают в argv, файлы получают права 600, остальные настройки в
+  них сохраняются. Повторно — `make corp-registries` (например, после смены токена).
 - **Stage 0 без GitHub:** `bootstrap.env` (только `KEY=VALUE`), `SETUP_WORK_UV_FROM_PIP=1`
   или `SETUP_WORK_UV_ARCHIVE=hdfs://…`, а также `SETUP_WORK_PRE_SCRIPTS`. При
   корпоративном индексе `uv.lock` заново резолвится относительно него.
@@ -407,7 +414,7 @@ make serve MODEL=qwen3-8b:q4_k_m PROFILE=local-llm # параметры инфе
 export SETUP_WORK_TEAM_CONFIG_DIR=~/setup-work-team
 make bootstrap && make corp-status
 make engine-install ENGINE=vllm              # SOURCE=upstream — принудительно публичный релиз
-make model-pull MODEL=qwen3-coder-30b-a3b:fp8  # SOURCE=hf — принудительно Hugging Face
+make model-pull MODEL=qwen3-coder-30b-a3b:fp8  # из артефакта в corporate.yaml
 make setup PROFILE=corp-gpu
 ```
 
@@ -436,11 +443,11 @@ make setup PROFILE=corp-gpu
 | `SETUP_WORK_BIN_DIR` | куда линкуются бинарники (`~/.local/bin`) |
 | `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` | корни для данных, состояния/логов и конфигурации |
 | `SETUP_WORK_CONFIG_DIR`, `SETUP_WORK_USER_CONFIG_DIR` | каталоги встроенной / пользовательской конфигурации |
-| `SETUP_WORK_MODEL_CACHE` | кэш моделей вместо стандартного кэша HF |
 | `SETUP_WORK_TEAM_CONFIG_DIR` | общий слой конфигурации команды |
 | `SETUP_WORK_MODEL_DIR` | куда распаковываются корпоративные артефакты моделей (`<data>/models`) |
 | `SETUP_WORK_UV_FROM_PIP`, `SETUP_WORK_UV_ARCHIVE`, `SETUP_WORK_PRE_SCRIPTS` | опции stage 0 для сетей без GitHub |
-| `HF_HOME`, `HF_HUB_CACHE`, `HF_TOKEN`, `HF_ENDPOINT`, `HF_HUB_OFFLINE` | стандартные настройки Hugging Face, учитываются |
+| `SETUP_WORK_PYPI_INDEX`, `_USER`, `_AUTH_FILE`, `_TRUSTED_HOST` | корпоративный PyPI → `pip.conf` (stage 0) |
+| `SETUP_WORK_NPM_REGISTRY`, `_AUTH_FILE`, `_CAFILE`, `_STRICT_SSL` | корпоративный npm → `.npmrc` (stage 0) |
 | `SETUP_WORK_API_KEY` | API-ключ для запущенных эндпоинтов |
 | `SETUP_WORK_HARDWARE_FILE` (`HARDWARE=`) | использовать записанный JSON с железом |
 | `HTTP(S)_PROXY`, `NO_PROXY` | учитываются при всех загрузках; запросы на loopback идут в обход прокси |
@@ -456,7 +463,7 @@ make setup PROFILE=corp-gpu
 | `checksum mismatch` | прокси или зеркало изменили файл. Загрузка отброшена; проверьте прокси или осознанно обновите зафиксированную сумму. |
 | Инструменту нужен системный пакет, а sudo нет | `make doctor` выводит точную команду для администратора; либо используйте micromamba/conda-forge |
 | `not downloaded (serve never downloads implicitly)` | выполните выведенную команду `make model-pull MODEL=…` |
-| `gated: your account has not been granted access` | примите лицензию на huggingface.co, затем `hf auth login` |
+| `has no artifact source` | добавьте `"<id>:<variant>"` в `models:` файла `corporate.yaml` или задайте варианту `source:` |
 | `estimated not to fit` | уменьшите `CONTEXT` / `CONCURRENCY`, возьмите вариант поменьше, задайте `TP=` или `FORCE=1`, если уверены |
 | vLLM падает с «free memory … less than desired GPU memory utilization» | GPU используют другие процессы; планировщик сам снижает utilization, когда это видит, либо задайте `GPU_UTIL=` |
 | CUDA-сборка llama.cpp не запускается на Linux | посмотрите `make serve-logs`; готовые бинарники собраны под glibc Ubuntu. Соберите из исходников с `-DGGML_CUDA=ON`. |
@@ -490,9 +497,9 @@ make setup PROFILE=corp-gpu
   обычном `npm install`. Установка из Git или локального каталога выполняет код сборки
   этого проекта, поэтому всегда требует подтверждения, а дополнительные команды
   `install.build` требуют `ALLOW_BUILD=1`.
-- **Загрузки.** LFS-файлы Hugging Face после загрузки сверяются с их sha256
-  (`--no-verify` отключает проверку). Ревизии резолвятся в коммит и могут быть
-  зафиксированы через `REVISION=`.
+- **Загрузки моделей.** Веса берутся только из корпоративных артефактов. Архивы по
+  `https://` обязаны иметь sha256; распаковка атомарная и с проверкой на выход за
+  пределы каталога.
 
 ## Участие в разработке
 
@@ -503,8 +510,8 @@ make format
 ```
 
 - Тесты не должны требовать GPU, сети или больших загрузок. Используйте записанные
-  профили из `examples/hardware/` и мокайте `nvidia-smi`, Hugging Face и подпроцессы.
-- **Новые модели:** копируйте геометрию внимания из `config.json` репозитория,
+  профили из `examples/hardware/` и мокайте `nvidia-smi`, HDFS и подпроцессы.
+- **Новые модели:** копируйте геометрию внимания из `config.json` модели,
   используйте реальные суммарные размеры файлов, явно перечисляйте GGUF-файлы или
   шаблоны шардов и указывайте происхождение. Добавляйте только артефакты, существование
   которых вы проверили.
@@ -526,7 +533,7 @@ Makefile ─ SETUP_WORK_* env ─▶ setup_work.cli (Typer)
    memory.py   оценка весов, KV-кэша, накладных расходов
    engines.py  адаптеры InferenceEngine: vllm, llama.cpp (совместимость, влезание, argv)
    models.py   рекомендатель: фильтр ▸ совместимость ▸ влезание ▸ оценка ▸ объяснение
-   hub.py      план HF ▸ подтверждение ▸ загрузка ▸ проверка; список/удаление кэша
+   hub.py      модели из артефактов: получение ▸ распаковка ▸ точка входа; список/удаление
    inference.py планирование запуска + ServerManager (состояние, готовность, остановка, тест)
    bootstrap.py / harness.py / profiles.py  строят планы из Step
    steps.py    единственный исполнитель: command | download | extract | link | remove | manual
