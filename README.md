@@ -122,6 +122,7 @@ make serve-stop
 | `models` | Каталог | `TASK` |
 | `recommend` | Ранжированные рекомендации с объяснениями | `TASK CONTEXT ENGINE CONCURRENCY TP KV_CACHE_DTYPE LIMIT EXPLAIN HARDWARE` |
 | `model-pull` / `-list` / `-info` / `-remove` | Веса из корпоративных артефактов (HDFS, NFS, HTTPS) | `MODEL` |
+| `zip-join` | Склеить части архива (`.zip`, `.z01`, `.z02`, …) по общему префиксу имени после подтверждения; результат `<префикс>.joined.zip` рядом с частями | `ZIP` (`OUT`, `ZIP_LAST=1`) |
 | `serve` | Запустить сервер (по умолчанию в фоне) | `MODEL ENGINE CONTEXT CONCURRENCY TP GPU_UTIL GPU_LAYERS THREADS HOST PORT INSTANCE SERVED_NAME ENGINE_ARGS FOREGROUND PLAN FORCE PROFILE` |
 | `serve-auto` | Лучшая *уже скачанная* модель для задачи | `TASK ENGINE CONTEXT ENGINE_ARGS` |
 | `serve-stop` / `-status` / `-logs` / `-test` | Жизненный цикл | `INSTANCE LINES FOLLOW URL` |

@@ -136,6 +136,11 @@ corp-setup: $(VENV_STAMP) ## Запустить корпоративные ск�
 corp-registries: ## Записать корпоративные PyPI/npm в pip.conf и .npmrc (SETUP_WORK_PYPI_*/NPM_* из bootstrap.env)
 	@sh scripts/bootstrap.sh --registries-only
 
+zip-join: ## Склеить части архива (.zip, .z01, .z02, ...) после подтверждения: ZIP=префикс|файл.zip|папка [OUT= ZIP_LAST=1]
+	@if [ -z "$(ZIP)" ]; then \
+		echo "error: ZIP is required, e.g. make $@ ZIP=/data/Qwen3.8-Flash" >&2; exit 2; fi
+	@python3 scripts/join_zip.py "$(ZIP)" $(if $(OUT),-o "$(OUT)") $(if $(filter 1,$(ZIP_LAST)),--zip-last)
+
 corp-status: $(VENV_STAMP) ## HDFS-клиент, Kerberos-тикет, зеркала, настроенные артефакты
 	@$(CLI) corp status
 
