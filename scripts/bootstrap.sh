@@ -67,8 +67,14 @@ load_env_file() {
         case "$key" in
             *TOKEN*|*SECRET*|*PASSWORD*|*API_KEY*) say "  refusing secret-like key $key"; continue ;;
         esac
-        # strip optional surrounding quotes
-        case "$value" in \"*\") value=${value#\"}; value=${value%\"} ;; \'*\') value=${value#\'}; value=${value%\'} ;; esac
+        # strip optional surrounding quotes, or a trailing "  # comment" from an unquoted value
+        case "$value" in
+            \"*\") value=${value#\"}; value=${value%\"} ;;
+            \'*\') value=${value#\'}; value=${value%\'} ;;
+            *)
+                value=${value%%[[:space:]]#*}
+                while :; do case "$value" in *[[:space:]]) value=${value%?} ;; *) break ;; esac; done ;;
+        esac
         eval "already=\${$key+set}"
         if [ "$already" = set ]; then continue; fi  # the user's environment wins
         export "$key=$value"
@@ -138,6 +144,7 @@ fi
 #   SETUP_WORK_NPM_AUTH_FILE      file with the npm _authToken
 #   SETUP_WORK_NPM_CAFILE         CA bundle for the registry (preferred over the next one)
 #   SETUP_WORK_NPM_STRICT_SSL     false disables TLS verification for npm
+#   SETUP_WORK_NPM_OPTIONS        more .npmrc keys, e.g. "audit=false fetch-retries=5"
 read_secret() {
     f=$(expand_home "$1")
     [ -r "$f" ] || die "cannot read $2 file: $f" 6
@@ -209,6 +216,15 @@ setup_npm() {
     auth="${SETUP_WORK_NPM_AUTH_FILE:+$(expand_home "$SETUP_WORK_NPM_AUTH_FILE")}"
     cafile="${SETUP_WORK_NPM_CAFILE:+$(expand_home "$SETUP_WORK_NPM_CAFILE")}"
     strict="${SETUP_WORK_NPM_STRICT_SSL:-}"
+    opts="${SETUP_WORK_NPM_OPTIONS:-}"
+    managed="registry= $key= cafile= strict-ssl="
+    for o in $opts; do
+        case "$o" in
+            [A-Za-z]*=?*) case "${o%%=*}" in *[!A-Za-z0-9_-]*) die "bad SETUP_WORK_NPM_OPTIONS entry: $o" 2 ;; esac ;;
+            *) die "bad SETUP_WORK_NPM_OPTIONS entry: $o (expected key=value)" 2 ;;
+        esac
+        managed="$managed ${o%%=*}="
+    done
     say "configuring npm registry $reg in $rc${auth:+ (token from $auth)}"
     [ -n "$DRY_RUN" ] && return 0
     tok=
@@ -219,13 +235,14 @@ setup_npm() {
     ( umask 077
       {
         if [ -f "$rc" ]; then
-            awk -v k="$key=" 'index($0, "registry=") != 1 && index($0, k) != 1 &&
-                index($0, "cafile=") != 1 && index($0, "strict-ssl=") != 1' "$rc"
+            awk -v m="$managed" 'BEGIN { n = split(m, ks, " ") }
+                { for (i = 1; i <= n; i++) if (index($0, ks[i]) == 1) next; print }' "$rc"
         fi
         say "registry=$reg"
         if [ -n "$tok" ]; then say "$key=$tok"; fi
         if [ -n "$cafile" ]; then say "cafile=$cafile"; fi
         if [ -n "$strict" ]; then say "strict-ssl=$strict"; fi
+        for o in $opts; do say "$o"; done
       } > "$tmp" ) && mv "$tmp" "$rc" || die "failed to write $rc" 1
 }
 

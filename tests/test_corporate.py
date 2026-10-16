@@ -510,6 +510,36 @@ def test_bootstrap_sh_writes_registries(tmp_path):
         assert f.stat().st_mode & 0o777 == 0o600
 
 
+def test_bootstrap_sh_npm_options_from_bootstrap_env(tmp_path):
+    home, env = _registries_env(tmp_path)
+    for k in ("SETUP_WORK_NPM_AUTH_FILE", "SETUP_WORK_NPM_STRICT_SSL"):
+        del env[k]
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "bootstrap.env").write_text(
+        "SETUP_WORK_NPM_AUTH_FILE=~/nfs/tokens/npm64.txt   # base64 из профиля\n"
+        'SETUP_WORK_NPM_OPTIONS="audit=false always-auth=true fetch-retries=5 save-exact=true"\n'
+    )
+    env["SETUP_WORK_USER_CONFIG_DIR"] = str(cfg)
+    (home / ".npmrc").write_text("audit=true\nfetch-retries=2\ncolor=false\n")
+    for _ in range(2):  # idempotent
+        out = _run_registries(env)
+        assert out.returncode == 0, out.stderr
+    assert (home / ".npmrc").read_text().splitlines() == [
+        "color=false",
+        "registry=https://repo.corp.example/npm/",
+        "//repo.corp.example/npm/:_authToken=QmFzZTY0",
+        "audit=false",
+        "always-auth=true",
+        "fetch-retries=5",
+        "save-exact=true",
+    ]
+
+    env["SETUP_WORK_NPM_OPTIONS"] = "audit"
+    out = _run_registries(env)
+    assert out.returncode == 2 and "bad SETUP_WORK_NPM_OPTIONS entry" in out.stderr
+
+
 def test_bootstrap_sh_registries_dry_run_and_missing_token(tmp_path):
     home, env = _registries_env(tmp_path)
     out = _run_registries(env, "--dry-run")

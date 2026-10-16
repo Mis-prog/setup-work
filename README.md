@@ -67,6 +67,7 @@ SETUP_WORK_PYPI_AUTH_FILE=~/nfs/token.txt  # файл с паролем/токе
 SETUP_WORK_PYPI_TRUSTED_HOST=<repo-host>   # только если ругается на сертификат
 SETUP_WORK_NPM_REGISTRY=https://<repo>/<path>/npm/
 SETUP_WORK_NPM_AUTH_FILE=~/nfs/tokens/npm-token-base64.txt
+SETUP_WORK_NPM_OPTIONS="audit=false always-auth=true fetch-retries=5 save-exact=true"
 SETUP_WORK_UV_FROM_PIP=1                   # uv из корпоративного PyPI (или SETUP_WORK_UV_ARCHIVE=…)
 ```
 
@@ -77,7 +78,7 @@ SETUP_WORK_UV_FROM_PIP=1                   # uv из корпоративног�
 |---|---|
 | `pip.conf` | `index-url`, `trusted-host` (остальные ваши настройки сохраняются) |
 | `uv.toml` | индекс по умолчанию, `python-downloads = "never"` (файл целиком ведёт setup-work) |
-| `npmrc` | `registry`, токен, `strict-ssl`/`cafile` (остальное сохраняется) |
+| `npmrc` | `registry`, токен, `strict-ssl`/`cafile`, ключи из `SETUP_WORK_NPM_OPTIONS` (остальное сохраняется) |
 
 `env.sh` направляет на них `pip`, `uv` и `npm`, поэтому они работают через
 корпоративный реестр и вне setup-work. Проверка: `pip config list`, `npm config get registry`,
