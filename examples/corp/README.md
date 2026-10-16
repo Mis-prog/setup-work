@@ -17,10 +17,10 @@ HDFS, PyPI и npm настраиваются корпоративными скр
    - `corporate.yaml`: пути на HDFS к весам, llama.cpp и venv vLLM; пути к
      корпоративным скриптам PyPI/npm; `trusted_git_hosts`;
    - `harnesses.yaml`: реальные `repository` и `ref` (тег или commit) для qwen-code,
-     opencode, pi, hermes, deepseek. Проверьте команды `build` и пути `binaries`
-     под ваши форки;
+     opencode, pi, hermes, deepseek и для `skillhub` (репозиторий навыков, пока только
+     клонируется). Проверьте команды `build` и пути `binaries` под ваши форки;
    - `bootstrap.env`: адреса корпоративных PyPI и npm и пути к файлам с токенами
-     (`SETUP_WORK_PYPI_*`, `SETUP_WORK_NPM_*`), а также как получить uv без GitHub
+     (`SETUP_WORK_PYPI_*`, `SETUP_WORK_NPM_*`), а также откуда брать uv (обязательно)
      (корпоративный PyPI или HDFS);
    - `models.yaml`: внутренние fine-tune модели, если они есть.
 3. Проверьте конфиг:
@@ -43,9 +43,9 @@ HDFS, PyPI и npm настраиваются корпоративными скр
 **venv для vLLM.** Обычный `zip -r` venv'а не переносится как есть: в `pyvenv.cfg` и
 `bin/*` зашиты пути машины, где его собирали. setup-work после распаковки:
 - проверяет, запускается ли `bin/python`;
-- если нет, ищет Python той же версии (`uv python find`, `pythonX.Y`) или предлагает
-  `uv python install X.Y`, затем перепрописывает `home` в `pyvenv.cfg` и ссылки
-  `bin/python*`;
+- если нет, ищет установленный Python той же версии (`uv python find`, `pythonX.Y`),
+  затем перепрописывает `home` в `pyvenv.cfg` и ссылки `bin/python*`. Python не
+  скачивается (зеркала нет), поэтому собирайте venv на той версии, что стоит на машинах;
 - переписывает shebang в `bin/*`;
 - запускает vLLM как `bin/python -c "…vllm main…" serve …`, поэтому даже битые
   shebang ему не мешают.
@@ -91,7 +91,7 @@ qwen    # / opencode / pi / hermes / deepseek
 
 | Шаг | Поведение |
 |---|---|
-| `make bootstrap` (stage 0, без Python) | читает `$SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env` (только `KEY=VALUE`, секреты отклоняются), запускает `SETUP_WORK_PRE_SCRIPTS` с подтверждением, пишет `pip.conf` и `.npmrc` из `SETUP_WORK_PYPI_*`/`SETUP_WORK_NPM_*` (токены из файлов, права 600, прочие настройки сохраняются), берёт uv из HDFS/PyPI/GitHub, передаёт `index-url` из pip.conf в uv |
+| `make bootstrap` (stage 0, без Python) | читает `$SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env` (только `KEY=VALUE`, секреты отклоняются), запускает `SETUP_WORK_PRE_SCRIPTS` с подтверждением, пишет `pip.conf` и `.npmrc` из `SETUP_WORK_PYPI_*`/`SETUP_WORK_NPM_*` (токены из файлов, права 600, прочие настройки сохраняются), берёт uv из HDFS, пути, внутреннего HTTPS или корпоративного PyPI (без GitHub), передаёт `index-url` из pip.conf в uv |
 | uv и `uv.lock` | `uv.lock` содержит ссылки на pypi.org; при корпоративном индексе lock пересобирается против него (версии из lock сохраняются как предпочтительные) |
 | Корпоративные скрипты | `make corp-setup`: каждый показывается и подтверждается; пропускается, если файлы из `creates` уже есть |
 | pip.conf → uv | uv не читает pip.conf: `index-url`, `extra-index-url`, `trusted-host` и `cert` превращаются в `UV_*` и `SSL_CERT_FILE` для всех вызовов uv |
@@ -114,7 +114,7 @@ make harness-doctor NAME=qwen-code
 | `no valid Kerberos ticket` | `kinit`, затем повторить команду |
 | `does not exist on HDFS` | проверьте путь: `hdfs dfs -ls <uri>` |
 | `not enough disk space` | нужно ~2× размера архива; задайте `SETUP_WORK_MODEL_DIR` или `XDG_DATA_HOME` на большой том |
-| `the vLLM venv was built with Python 3.X … not available` | `uv python install 3.X` (с `UV_PYTHON_INSTALL_MIRROR`) или соберите venv на той же версии |
+| `the vLLM venv was built with Python 3.X … not available` | поставьте Python 3.X на машину (системный пакет, админы) или пересоберите venv на той версии, что есть на машинах |
 | `uv sync failed` | индекс: `make corp-env`, `UV_DEFAULT_INDEX`, pip.conf; прокси |
 | `cannot read … auth file` | проверьте путь к файлу с токеном в `bootstrap.env` (`SETUP_WORK_PYPI_AUTH_FILE`, `SETUP_WORK_NPM_AUTH_FILE`) |
 | сменился токен | `make corp-registries` перезапишет `pip.conf` и `.npmrc` |

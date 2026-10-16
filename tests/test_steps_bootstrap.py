@@ -8,8 +8,9 @@ import pytest
 
 from setup_work import bootstrap as bs
 from setup_work import steps as st
+from setup_work.config import ArtifactRef
 from setup_work.diagnostics import Environment, ToolStatus, version_satisfies
-from setup_work.errors import SetupWorkError, UnsupportedError
+from setup_work.errors import NotFoundError, SetupWorkError, UnsupportedError
 from setup_work.runner import Runner, redact_argv
 
 
@@ -151,21 +152,38 @@ def test_root_in_container_uses_package_manager(monkeypatch):
     assert plan.status == "install" and plan.steps[-1].argv[0] == "apt-get"
 
 
-def test_plan_uv_pinned(cfg, monkeypatch):
+def _corp_tools(cfg, **uris):
+    cfg.corporate.tools.update({k: ArtifactRef(uri=v) for k, v in uris.items()})
+    return cfg
+
+
+def test_plan_uv_from_corporate_source(cfg, monkeypatch):
     monkeypatch.setattr(bs, "_platform", lambda: ("Linux", "x86_64"))
     monkeypatch.setattr(bs, "_is_musl", lambda: False)
-    steps = bs.plan_uv(cfg)
-    dl = steps[0]
-    assert dl.kind == "download" and "0.12.13" in dl.url
-    assert dl.sha256 == cfg.defaults.tools["uv"].sha256["x86_64-unknown-linux-gnu"]
+    steps = bs.plan_uv(_corp_tools(cfg, uv="hdfs:///tools/uv/{name}"))
+    fetch = steps[0]
+    assert fetch.kind == "fetch"
+    assert fetch.artifact.uri == "hdfs:///tools/uv/uv-0.12.13-x86_64-unknown-linux-gnu.tar.gz"
+    assert fetch.sha256 == cfg.defaults.tools["uv"].sha256["x86_64-unknown-linux-gnu"]
     assert [s.dest.name for s in steps if s.kind == "link"] == ["uv", "uvx"]
+
+
+def test_tools_never_fall_back_to_public_hosts(cfg, monkeypatch):
+    monkeypatch.setattr(bs, "_platform", lambda: ("Darwin", "arm64"))
+    for plan in (bs.plan_uv, bs.plan_node, bs.plan_git_lfs):
+        with pytest.raises(NotFoundError, match="no corporate source"):
+            plan(cfg)
+    monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env([]))
+    (p,) = bs.plan_tools(cfg, ["node"])
+    assert p.status == "manual" and "tools.node.uri" in p.steps[0].description
 
 
 def test_plan_node_and_git_lfs_targets(cfg, monkeypatch):
     monkeypatch.setattr(bs, "_platform", lambda: ("Darwin", "arm64"))
-    assert bs.plan_node(cfg)[0].url.endswith("node-v24.20.0-darwin-arm64.tar.gz")
+    _corp_tools(cfg, node="/mirror/{name}", **{"git-lfs": "/mirror/{name}"})
+    assert bs.plan_node(cfg)[0].artifact.uri == "/mirror/node-v24.20.0-darwin-arm64.tar.gz"
     lfs = bs.plan_git_lfs(cfg)
-    assert lfs[0].url.endswith("git-lfs-darwin-arm64-v3.8.0.zip")
+    assert lfs[0].artifact.uri == "/mirror/git-lfs-darwin-arm64-v3.8.0.zip"
     assert lfs[-1].kind == "manual"  # never edits ~/.gitconfig itself
     monkeypatch.setattr(bs, "_platform", lambda: ("Linux", "riscv64"))
     with pytest.raises(UnsupportedError):
@@ -179,17 +197,7 @@ def test_idempotent_when_satisfied(cfg, monkeypatch):
     assert all(p.status == "satisfied" and not p.steps for p in plans)
 
 
-def test_llama_cpp_asset_selection(hw_4090, hw_v100, hw_mac, hw_cpu):
-    assert bs.llama_cpp_asset(hw_4090)[0] == "ubuntu-cuda-12.8-x64"
-    asset, notes = bs.llama_cpp_asset(hw_v100)  # driver reports CUDA 12.2
-    assert asset == "ubuntu-x64" and any("12.8" in n for n in notes)
-    assert bs.llama_cpp_asset(hw_mac)[0] == "macos-arm64"
-    assert bs.llama_cpp_asset(hw_cpu)[0] == "ubuntu-x64"
-
-
-def test_vllm_unsupported_on_mac_and_cpu(cfg, hw_mac, hw_cpu, hw_a100x4):
-    for hw in (hw_mac, hw_cpu):
-        with pytest.raises(UnsupportedError):
-            bs.plan_engine(cfg, "vllm", hw)
-    steps, _ = bs.plan_engine(cfg, "vllm", hw_a100x4)
-    assert any("vllm==0.30.0" in (s.argv or []) for s in steps)
+def test_engines_only_from_corporate_artifacts(cfg, hw_a100x4):
+    for engine in ("llama.cpp", "vllm"):
+        with pytest.raises(NotFoundError, match="no corporate artifact"):
+            bs.plan_engine(cfg, engine, hw_a100x4)

@@ -5,10 +5,11 @@
 #     run corporate pre-scripts ($SETUP_WORK_PRE_SCRIPTS), each confirmed, and
 #     write the corporate package registries into pip.conf / .npmrc
 #     (SETUP_WORK_PYPI_* / SETUP_WORK_NPM_*, see section 0c).
-#  1. If uv is missing, obtain it from (first match):
-#       SETUP_WORK_UV_ARCHIVE   local path or hdfs:// URI of the official uv tarball
+#  1. If uv is missing, obtain it from a corporate source (one is required):
+#       SETUP_WORK_UV_ARCHIVE   absolute path, hdfs:// or internal https:// URL of the
+#                               official uv tarball, sha256-verified against the pin
 #       SETUP_WORK_UV_FROM_PIP=1  `python3 -m pip install --user uv==<pin>` (corporate PyPI)
-#       GitHub release (default), sha256-verified against the pinned digest.
+#     Nothing is downloaded from public hosts.
 #  2. Create the project environment with `uv sync --frozen`. Index settings from
 #     pip.conf are passed to uv (uv does not read pip.conf itself).
 #
@@ -21,7 +22,7 @@
 set -eu
 
 UV_VERSION="0.12.13"
-# sha256 of uv-<target>.tar.gz from https://github.com/astral-sh/uv/releases/tag/0.12.13
+# sha256 of the official uv-<target>.tar.gz release files (uv 0.12.13)
 SHA_aarch64_apple_darwin="7e6ddb9316acc00f2296c82ff4d99977870ee34b2f0ddcae9444d714db9364ed"
 SHA_x86_64_apple_darwin="5e287ef61cb6a9b61b3a83fef124fd143e400468a7dac794230147a810e17119"
 SHA_aarch64_unknown_linux_gnu="2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9"
@@ -275,7 +276,7 @@ fetch() {  # url dest
     elif command -v wget >/dev/null 2>&1; then
         run wget --https-only -q -O "$2" "$1"
     else
-        die "need curl or wget to download uv (or set SETUP_WORK_UV_ARCHIVE / SETUP_WORK_UV_FROM_PIP=1)" 3
+        die "need curl or wget for an https:// SETUP_WORK_UV_ARCHIVE (or use a path, hdfs:// or SETUP_WORK_UV_FROM_PIP=1)" 3
     fi
 }
 
@@ -305,7 +306,7 @@ install_uv_archive() {
     else
         src="${SETUP_WORK_UV_ARCHIVE:-}"
         case "$src" in
-            '') fetch "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${target}.tar.gz" "$archive.part" ;;
+            https://*) fetch "$src" "$archive.part" ;;
             hdfs:*|viewfs:*)
                 command -v "${SETUP_WORK_HDFS_CLI:-hdfs}" >/dev/null 2>&1 || die "hdfs client not found" 3
                 if command -v klist >/dev/null 2>&1 && ! klist -s; then
@@ -314,7 +315,7 @@ install_uv_archive() {
                 rm -f "$archive.part"
                 run "${SETUP_WORK_HDFS_CLI:-hdfs}" dfs -get "$src" "$archive.part" ;;
             /*) run cp "$src" "$archive.part" ;;
-            *) die "SETUP_WORK_UV_ARCHIVE must be an absolute path or hdfs:// URI" 2 ;;
+            *) die "SETUP_WORK_UV_ARCHIVE must be an absolute path, hdfs:// or https:// URI" 2 ;;
         esac
         if [ -z "$DRY_RUN" ]; then
             got=$(sha256_of "$archive.part")
@@ -346,10 +347,12 @@ else
     say "uv not found: installing uv $UV_VERSION into $BIN_DIR"
     use_pip=
     case "${SETUP_WORK_UV_FROM_PIP:-}" in 1|true|yes) use_pip=1 ;; esac
-    if [ -n "$use_pip" ] && [ -z "${SETUP_WORK_UV_ARCHIVE:-}" ]; then
+    if [ -n "${SETUP_WORK_UV_ARCHIVE:-}" ]; then
+        install_uv_archive
+    elif [ -n "$use_pip" ]; then
         install_uv_pip
     else
-        install_uv_archive
+        die "no corporate source for uv: set SETUP_WORK_UV_ARCHIVE (path, hdfs://, https://) or SETUP_WORK_UV_FROM_PIP=1 in bootstrap.env" 3
     fi
     UV="$BIN_DIR/uv"
     case ":$PATH:" in
@@ -363,6 +366,9 @@ fi
 # ---- 2. project environment -----------------------------------------------------
 # uv.lock records pypi.org URLs. With a corporate index, re-resolve against it
 # (locked versions are kept as preferences) instead of using the recorded URLs.
+# There is no Python mirror: uv must use an interpreter already on the machine.
+UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
+export UV_PYTHON_DOWNLOADS
 SYNC_FLAGS="--frozen"
 if [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ]; then
     SYNC_FLAGS=""
@@ -374,7 +380,7 @@ if [ -n "$DRY_RUN" ]; then
 else
     # shellcheck disable=SC2086
     (cd "$ROOT" && "$UV" sync $SYNC_FLAGS --quiet) \
-        || die "uv sync failed; check the package index (UV_DEFAULT_INDEX / pip.conf) and proxy settings" 1
+        || die "uv sync failed; check that Python >= 3.11 is installed (uv does not download it) and the package index (UV_DEFAULT_INDEX / pip.conf)" 1
     mkdir -p "$ROOT/.venv" && touch "$ROOT/.venv/.setup-work-synced"
 fi
 say "stage-0 bootstrap complete"

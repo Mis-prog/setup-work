@@ -47,7 +47,6 @@ export SETUP_WORK_DRY_RUN        = $(DRY_RUN)
 export SETUP_WORK_YES            = $(YES)
 export SETUP_WORK_JSON           = $(JSON)
 export SETUP_WORK_VERBOSE        = $(VERBOSE)
-export SETUP_WORK_SOURCE         = $(SOURCE)
 export SETUP_WORK_ENGINE_ARGS    = $(ENGINE_ARGS)
 ifeq ($(FOREGROUND),1)
 export SETUP_WORK_DETACH = 0
@@ -122,7 +121,7 @@ bootstrap-node: $(VENV_STAMP) ## Установить зафиксированн
 bootstrap-tools: $(VENV_STAMP) ## Установить git, git-lfs, curl, wget и инструменты сборки
 	@$(CLI) bootstrap tools
 
-engine-install: $(VENV_STAMP) ## Установить движок: ENGINE=llama.cpp|vllm [SOURCE=corporate|upstream]
+engine-install: $(VENV_STAMP) ## Установить движок из корпоративного артефакта: ENGINE=llama.cpp|vllm
 	$(call require,ENGINE,ENGINE,llama.cpp)
 	@$(CLI) engine install
 

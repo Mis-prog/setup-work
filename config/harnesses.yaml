@@ -26,7 +26,6 @@
 harnesses:
   claude-code:
     description: Anthropic Claude Code agentic coding CLI
-    homepage: https://github.com/anthropics/claude-code
     source: npm
     package: "@anthropic-ai/claude-code"
     version: 2.1.285
@@ -38,7 +37,6 @@ harnesses:
 
   codex:
     description: OpenAI Codex CLI
-    homepage: https://github.com/openai/codex
     source: npm
     package: "@openai/codex"
     version: 0.159.1
@@ -50,7 +48,6 @@ harnesses:
 
   qwen-code:
     description: Qwen Code agentic coding CLI (works with any OpenAI-compatible endpoint)
-    homepage: https://github.com/QwenLM/qwen-code
     source: npm
     package: "@qwen-code/qwen-code"
     version: 0.24.7
@@ -62,7 +59,6 @@ harnesses:
 
   opencode:
     description: OpenCode terminal coding agent
-    homepage: https://github.com/anomalyco/opencode
     source: npm
     package: opencode-ai
     version: 1.18.33
@@ -73,7 +69,6 @@ harnesses:
 
   aider:
     description: Aider AI pair programming in the terminal
-    homepage: https://github.com/Aider-AI/aider
     source: pypi
     package: aider-chat
     version: 0.86.2

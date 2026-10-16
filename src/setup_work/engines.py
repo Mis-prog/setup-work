@@ -583,16 +583,11 @@ class LlamaCppEngine:
 
     @staticmethod
     def runtime_env(binary: str) -> dict[str, str]:
-        """Expose a bundled CUDA runtime (engines/llama.cpp/<release>/cudart) if present."""
+        """Expose shared libraries shipped next to llama-server in the corporate build."""
         bdir = Path(binary).resolve().parent
-        dirs: list[str] = []
-        if any(bdir.glob("*.so*")):
-            dirs.append(str(bdir))
-        root = bdir.parent / "cudart"
-        if root.is_dir():
-            dirs += sorted({str(p.parent) for p in root.rglob("libcudart.so*")})
-        if not dirs:
+        if not any(bdir.glob("*.so*")):
             return {}
+        dirs = [str(bdir)]
         current = os.environ.get("LD_LIBRARY_PATH")
         return {"LD_LIBRARY_PATH": os.pathsep.join(dirs + ([current] if current else []))}
 

@@ -105,7 +105,7 @@ def test_expand_path_defaults():
         (
             {
                 "source": "git",
-                "repository": "https://github.com/a/b.git",
+                "repository": "https://bitbucket.corp.example/scm/a/b.git",
                 "install": {"method": "uv"},
             },
             "requires 'ref'",
@@ -113,14 +113,18 @@ def test_expand_path_defaults():
         (
             {
                 "source": "git",
-                "repository": "https://github.com/a/b.git",
+                "repository": "https://bitbucket.corp.example/scm/a/b.git",
                 "ref": "-x",
                 "install": {"method": "uv"},
             },
             "invalid git ref",
         ),
         (
-            {"source": "git", "repository": "https://github.com/a/b.git", "ref": "main"},
+            {
+                "source": "git",
+                "repository": "https://bitbucket.corp.example/scm/a/b.git",
+                "ref": "main",
+            },
             "install.method",
         ),
         ({"source": "npm", "package": "foo"}, "requires 'version'"),
@@ -152,7 +156,7 @@ def test_valid_private_git_harness_via_ssh():
     h = HarnessSpec.model_validate(
         {
             "source": "git",
-            "repository": "git@github.example.com:team/agent.git",
+            "repository": "ssh://git@bitbucket.corp.example:7999/team/agent.git",
             "ref": "v1.4.0",
             "install": {"method": "uv"},
             "environment": {"required": ["OPENAI_BASE_URL", "OPENAI_API_KEY"]},
@@ -165,7 +169,7 @@ def test_branch_ref_is_not_considered_pinned():
     h = HarnessSpec.model_validate(
         {
             "source": "git",
-            "repository": "https://github.com/a/b.git",
+            "repository": "https://bitbucket.corp.example/scm/a/b.git",
             "ref": "main",
             "install": {"method": "uv"},
         }

@@ -75,7 +75,6 @@ class DownloadDefaults(Strict):
 
 class ToolPin(Strict):
     version: str
-    url: str | None = None
     min_version: str | None = None
     sha256: dict[str, str] = Field(default_factory=dict)
 
@@ -88,33 +87,12 @@ class ToolPin(Strict):
         return v
 
 
-class LlamaCppPin(Strict):
-    release: str
-    url: str
-    assets: dict[str, str]
-    runtime_url: str | None = None
-    runtime_assets: dict[str, str] = Field(default_factory=dict)
-
-
-class VllmPin(Strict):
-    version: str
-    python: str = "3.12"
-
-
-class EnginePins(Strict):
-    llama_cpp: LlamaCppPin = Field(alias="llama.cpp")
-    vllm: VllmPin
-
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-
 class Defaults(Strict):
     paths: PathsConfig
     inference: InferenceDefaults = Field(default_factory=InferenceDefaults)
     recommend: RecommendDefaults = Field(default_factory=RecommendDefaults)
     downloads: DownloadDefaults = Field(default_factory=DownloadDefaults)
     tools: dict[str, ToolPin] = Field(default_factory=dict)
-    engines: EnginePins
 
 
 # --------------------------------------------------------------------------- models
@@ -327,7 +305,6 @@ _REF_RE = re.compile(r"^[\w][\w./-]*$")
 
 class HarnessSpec(Strict):
     description: str = ""
-    homepage: str | None = None
     source: Literal["npm", "pypi", "git", "local"]
     package: str | None = None
     version: str | None = None

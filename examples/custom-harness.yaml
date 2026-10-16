@@ -18,7 +18,7 @@ harnesses:
   custom-agent:
     description: Internal coding agent (Python)
     source: git
-    repository: git@github.example.com:platform/custom-agent.git
+    repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/custom-agent.git
     ref: v1.4.2                  # tag or commit SHA = pinned; a branch works but is reported unpinned
     install:
       method: uv                 # creates <data>/harnesses/custom-agent/.venv and pip-installs the checkout

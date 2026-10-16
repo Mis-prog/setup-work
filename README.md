@@ -37,7 +37,6 @@ make harness-install NAME=qwen-code   # coding-агент, зафиксиров�
 Разобранные примеры: [удалённый GPU-сервер без sudo](examples/remote-gpu-no-sudo.md) ·
 [macOS Apple Silicon + llama.cpp](examples/macos-apple-silicon.md) ·
 [несколько GPU NVIDIA + vLLM](examples/multi-gpu-vllm.md) ·
-[корпоративные прокси / изолированная сеть](examples/corporate-offline.md) ·
 [**внутреннее окружение: артефакты в HDFS, корпоративные PyPI/npm, внутренние форки харнессов**](examples/corp/README.md) ·
 [собственные харнессы](examples/custom-harness.yaml)
 
@@ -54,8 +53,9 @@ Python? Достаточно ли свежий Node для CLI агента? Е�
 setup-work превращает эти решения в декларативную конфигурацию с зафиксированными
 версиями и детерминированный планировщик:
 
-- **Bootstrap** ставит только недостающее, в user space, из официальных релизных
-  архивов с зафиксированными версиями и проверкой контрольных сумм.
+- **Bootstrap** ставит только недостающее, в user space, из корпоративных источников
+  (HDFS, NFS, внутренний HTTPS) с зафиксированными версиями и проверкой контрольных
+  сумм. В публичный интернет (GitHub, nodejs.org, Hugging Face) setup-work не ходит.
 - **Подбор модели под железо** оценивает веса, KV-кэш и накладные расходы рантайма
   для каждого устройства, сверяет ядра квантизации с compute capability и объясняет
   каждое решение — и принятие, и отказ.
@@ -69,11 +69,11 @@ setup-work превращает эти решения в декларативн�
 
 | Платформа | Статус |
 |---|---|
-| macOS 14+ на Apple Silicon | **Проверено.** Юнит-тесты; `doctor`, `hardware`, `recommend` и `engine-install ENGINE=llama.cpp` запускались на машине M4 / 24 ГБ. |
-| macOS на Intel | Экспериментально: зафиксированные артефакты есть, не запускалось. |
+| macOS 14+ на Apple Silicon | **Проверено.** Юнит-тесты; `doctor`, `hardware` и `recommend` запускались на машине M4 / 24 ГБ. |
+| macOS на Intel | Экспериментально: sha256 для uv/Node.js/Git LFS зафиксированы, не запускалось. |
 | Linux x86_64 (glibc), только CPU | Покрыто юнит-тестами с замоканным железом; CI работает на Ubuntu. Авторы пока не запускали на реальных серверах. |
 | Linux x86_64 + NVIDIA (llama.cpp, vLLM) | **Не проверено на реальных GPU.** Планирование и генерация команд протестированы на записанных профилях (V100, RTX 4090, A100, H100, смешанные). |
-| Linux arm64 | Экспериментально. Готовая сборка llama.cpp — только CPU, поэтому для CUDA на ARM нужна сборка из исходников. |
+| Linux arm64 | Экспериментально. |
 | Контейнеры без root | Поддерживается by design: всё пишется в `$HOME`/XDG-каталоги, лимиты памяти cgroup учитываются. |
 | Alpine / musl | Не поддерживается: нет зафиксированной сборки uv. |
 | AMD ROCm, Intel GPU | Определяются и помечаются как неподдерживаемые; считается, что есть только CPU. |
@@ -84,11 +84,15 @@ setup-work превращает эти решения в декларативн�
 
 ## Быстрый старт
 
-Требования: `git`, `make`, `tar` и `curl` или `wget`. Python и uv необязательны:
-stage 0 сам установит uv, если его нет.
+Требования: `git`, `make`, `tar`, доступ к корпоративному хранилищу (HDFS-клиент и
+Kerberos, NFS или внутренний HTTPS) и командный конфиг (`SETUP_WORK_TEAM_CONFIG_DIR`,
+см. [examples/corp/](examples/corp/README.md)). Нужен установленный Python 3.11+
+(зеркала Python нет, uv интерпретаторы не скачивает: `UV_PYTHON_DOWNLOADS=never`). uv
+необязателен: stage 0 возьмёт его из `SETUP_WORK_UV_ARCHIVE` или корпоративного PyPI.
 
 ```bash
-git clone https://github.com/<you>/setup-work.git && cd setup-work
+git clone https://<bitbucket-host>/scm/<PROJECT>/setup-work.git && cd setup-work
+export SETUP_WORK_TEAM_CONFIG_DIR=~/setup-work-team
 make bootstrap DRY_RUN=1     # предпросмотр всех действий
 make bootstrap               # uv + окружение проекта + недостающие инструменты (user space)
 export PATH="$HOME/.local/bin:$PATH"   # добавьте в профиль shell сами
@@ -118,7 +122,7 @@ make serve-stop
 | `version` | Версия | |
 | `bootstrap` | Stage 0 (uv + venv), затем все инструменты | `DRY_RUN`, `ALLOW_SUDO` |
 | `bootstrap-python` / `-node` / `-tools` | Одна группа инструментов | |
-| `engine-install` / `engine-status` | llama.cpp / vLLM (корпоративный артефакт или зафиксированный релиз) | `ENGINE SOURCE` |
+| `engine-install` / `engine-status` | llama.cpp / vLLM из корпоративного артефакта | `ENGINE` |
 | `models` | Каталог | `TASK` |
 | `recommend` | Ранжированные рекомендации с объяснениями | `TASK CONTEXT ENGINE CONCURRENCY TP KV_CACHE_DTYPE LIMIT EXPLAIN HARDWARE` |
 | `model-pull` / `-list` / `-info` / `-remove` | Веса из корпоративных артефактов (HDFS, NFS, HTTPS) | `MODEL` |
@@ -320,7 +324,7 @@ make harness-remove  NAME=qwen-code            # с подтверждением
 harnesses:
   custom-agent:
     source: git
-    repository: git@github.example.com:platform/custom-agent.git   # используется уже настроенная git-аутентификация
+    repository: https://<bitbucket-host>/scm/<PROJECT>/custom-agent.git   # логин/токен из git credential helper
     ref: v1.4.2
     install: {method: uv, python: "3.12"}
     binaries: [custom-agent]
@@ -407,14 +411,14 @@ make serve MODEL=qwen3-8b:q4_k_m PROFILE=local-llm # параметры инфе
   `bootstrap.env`. Stage 0 сам пишет `pip.conf` и `.npmrc`: токены читаются из файлов,
   не печатаются и не попадают в argv, файлы получают права 600, остальные настройки в
   них сохраняются. Повторно — `make corp-registries` (например, после смены токена).
-- **Stage 0 без GitHub:** `bootstrap.env` (только `KEY=VALUE`), `SETUP_WORK_UV_FROM_PIP=1`
+- **Stage 0:** `bootstrap.env` (только `KEY=VALUE`), `SETUP_WORK_UV_FROM_PIP=1`
   или `SETUP_WORK_UV_ARCHIVE=hdfs://…`, а также `SETUP_WORK_PRE_SCRIPTS`. При
   корпоративном индексе `uv.lock` заново резолвится относительно него.
 
 ```bash
 export SETUP_WORK_TEAM_CONFIG_DIR=~/setup-work-team
 make bootstrap && make corp-status
-make engine-install ENGINE=vllm              # SOURCE=upstream — принудительно публичный релиз
+make engine-install ENGINE=vllm              # из engines.vllm в corporate.yaml
 make model-pull MODEL=qwen3-coder-30b-a3b:fp8  # из артефакта в corporate.yaml
 make setup PROFILE=corp-gpu
 ```
@@ -446,7 +450,7 @@ make setup PROFILE=corp-gpu
 | `SETUP_WORK_CONFIG_DIR`, `SETUP_WORK_USER_CONFIG_DIR` | каталоги встроенной / пользовательской конфигурации |
 | `SETUP_WORK_TEAM_CONFIG_DIR` | общий слой конфигурации команды |
 | `SETUP_WORK_MODEL_DIR` | куда распаковываются корпоративные артефакты моделей (`<data>/models`) |
-| `SETUP_WORK_UV_FROM_PIP`, `SETUP_WORK_UV_ARCHIVE`, `SETUP_WORK_PRE_SCRIPTS` | опции stage 0 для сетей без GitHub |
+| `SETUP_WORK_UV_FROM_PIP`, `SETUP_WORK_UV_ARCHIVE`, `SETUP_WORK_PRE_SCRIPTS` | откуда stage 0 берёт uv (один из вариантов обязателен) и какие скрипты запускает |
 | `SETUP_WORK_PYPI_INDEX`, `_USER`, `_AUTH_FILE`, `_TRUSTED_HOST` | корпоративный PyPI → `pip.conf` (stage 0) |
 | `SETUP_WORK_NPM_REGISTRY`, `_AUTH_FILE`, `_CAFILE`, `_STRICT_SSL` | корпоративный npm → `.npmrc` (stage 0) |
 | `SETUP_WORK_API_KEY` | API-ключ для запущенных эндпоинтов |
@@ -477,10 +481,11 @@ make setup PROFILE=corp-gpu
 - **Никакого скрытого повышения привилегий.** sudo используется только при
   `ALLOW_SUDO=1` *и* подтверждении — интерактивном или через `YES=1`. Установки через
   Homebrew тоже подтверждаются.
-- **Никаких удалённых скриптов.** Stage 0 и все установки инструментов и движков
-  скачивают официальные релизные архивы по HTTPS. Каждый архив перед использованием
-  сверяется с зафиксированным sha256 и распаковывается с проверками на выход за пределы
-  каталога, симлинки и файлы устройств.
+- **Никаких удалённых скриптов и публичных хостов.** Stage 0 и все установки
+  инструментов и движков берут архивы только из корпоративных источников
+  (`corporate.yaml`, `bootstrap.env`). Архивы инструментов сверяются с зафиксированным
+  sha256, всё распаковывается с проверками на выход за пределы каталога, симлинки и
+  файлы устройств. Если источник не настроен, команда завершается ошибкой с подсказкой.
 - **Только argv.** Все вызовы подпроцессов используют список аргументов
   (`shell=False`). Переменные make попадают в CLI через окружение, а не через
   подстановку в shell.

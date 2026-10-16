@@ -300,7 +300,7 @@ def test_llama_cpp_artifact_activation(tmp_path, fake_hdfs):
     assert b and os.access(b, os.X_OK)
     assert "LD_LIBRARY_PATH" in LlamaCppEngine.runtime_env(b)
     with pytest.raises(SetupWorkError, match="no corporate artifact"):
-        bs.plan_engine(team(tmp_path, ""), "vllm", load_hw("1x-rtx4090"), source="corporate")
+        bs.plan_engine(team(tmp_path, ""), "vllm", load_hw("1x-rtx4090"))
 
 
 def test_tool_archive_from_corporate_source(tmp_path, monkeypatch):
@@ -372,7 +372,7 @@ def test_wrapper_binaries_and_trusted_hosts(tmp_path, monkeypatch):
     (src / "dist" / "cli.sh").write_text('echo agent-ok "$@"\n')
     cfg = team(
         tmp_path,
-        "trusted_git_hosts: [git.corp.example]\n",
+        "trusted_git_hosts: [bitbucket.corp.example]\n",
         **{
             "harnesses.yaml": f"""
 harnesses:
@@ -386,7 +386,7 @@ harnesses:
       - {{name: lagent, path: dist/cli.sh, interpreter: sh}}
   forked:
     source: git
-    repository: git@git.corp.example:ai/forked.git
+    repository: ssh://git@bitbucket.corp.example:7999/ai/forked.git
     ref: v1.0.0
     install: {{method: none, build: [[npm, ci], [npm, run, build]]}}
     binaries: [{{name: forked, path: dist/cli.js, interpreter: node}}]

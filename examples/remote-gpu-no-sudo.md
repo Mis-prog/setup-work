@@ -2,7 +2,7 @@
 
 Scenario: a shared Linux GPU server (Ubuntu 22.04, NVIDIA driver already installed by
 the admins), an unprivileged account, home directory on a small disk and a large
-scratch volume at `/data/$USER`. Python on the box is 3.8, there is no Node.js, and
+scratch volume at `/data/$USER`. Python 3.12 is installed system-wide, there is no Node.js, and
 you cannot run `sudo`.
 
 > Status: the commands below are exercised by the test-suite with mocked hardware and
@@ -12,15 +12,18 @@ you cannot run `sudo`.
 ## 0. Requirements on the server
 
 - `git`, `make`, `tar`, and `curl` *or* `wget` (present on almost every server).
-- Outbound HTTPS to github.com, nodejs.org and pypi.org (or a proxy).
-- Model weights published as corporate artifacts (HDFS, NFS or HTTPS), mapped in
-  `corporate.yaml` — see [corp/](corp/README.md).
+- Access to the corporate storage (HDFS client + Kerberos ticket, NFS or internal HTTPS)
+  and the corporate PyPI / npm registries. Nothing is fetched from public hosts.
+- A team config directory (`SETUP_WORK_TEAM_CONFIG_DIR`) with `corporate.yaml` mapping
+  uv, Node.js, Git LFS, the engines and the model weights, and `bootstrap.env` with the
+  registries and the uv source — see [corp/](corp/README.md).
 
 ## 1. Clone and point heavy data at the big volume
 
 ```bash
-git clone https://github.com/<you>/setup-work.git ~/setup-work
+git clone https://<bitbucket-host>/scm/<PROJECT>/setup-work.git ~/setup-work
 cd ~/setup-work
+export SETUP_WORK_TEAM_CONFIG_DIR=~/setup-work-team
 
 # Keep weights and engines off the small home disk (optional).
 export XDG_DATA_HOME=/data/$USER/share      # models, engines, harnesses, Node.js, uv
@@ -34,13 +37,15 @@ startup files.
 
 ```bash
 sh scripts/bootstrap.sh --dry-run   # what stage 0 would do (no Python needed)
-make bootstrap                      # installs pinned uv (sha256-checked) + project venv
+make bootstrap                      # uv from the corporate source (sha256-checked) + project venv
 make doctor                         # system, tools, GPUs, engines
 make hardware-json > hw.json        # keep a record; use it to plan from your laptop
 ```
 
-`make bootstrap` installs uv into `~/.local/bin`, lets uv download Python 3.12 into
-user space, then installs Node.js 24 and Git LFS from pinned official archives.
+`make bootstrap` installs uv into `~/.local/bin`, builds the project venv with the
+machine's Python (3.11+ required; there is no Python mirror, so uv never downloads
+interpreters), then installs Node.js 24 and Git LFS from the archives mapped in
+`corporate.yaml` `tools`.
 Packages that need a system package manager (e.g. `build-essential`) are *reported*
 with the exact command for an administrator; nothing is attempted with sudo unless
 you pass `ALLOW_SUDO=1` and confirm.
@@ -59,8 +64,8 @@ will not be offered AWQ or FP8 checkpoints.
 ## 4. Install an engine and the weights
 
 ```bash
-make engine-install ENGINE=vllm          # Python 3.12 venv in $XDG_DATA_HOME/setup-work/engines/vllm
-make engine-install ENGINE=llama.cpp     # prebuilt CUDA build matching the driver
+make engine-install ENGINE=vllm          # venv zip from corporate.yaml, repaired for this machine
+make engine-install ENGINE=llama.cpp     # corporate CUDA build from corporate.yaml
 
 make model-pull MODEL=qwen3-coder-30b-a3b:fp8   # from the artifact mapped in corporate.yaml
 ```

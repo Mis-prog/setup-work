@@ -31,7 +31,6 @@ from .runner import Runner, format_argv
 
 StepKind = Literal[
     "command",
-    "download",
     "extract",
     "link",
     "manual",
@@ -50,7 +49,6 @@ class Step:
     argv: list[str] | None = None
     cwd: Path | None = None
     env: dict[str, str] | None = None
-    url: str | None = None
     sha256: str | None = None
     src: Path | None = None
     dest: Path | None = None
@@ -68,8 +66,6 @@ class Step:
     def render(self) -> str:
         if self.kind == "command" and self.argv:
             return format_argv(self.argv) + (f"   (in {self.cwd})" if self.cwd else "")
-        if self.kind == "download":
-            return f"download {self.url} -> {self.dest} (sha256 {str(self.sha256)[:12]}…)"
         if self.kind == "extract":
             return f"extract {self.src} -> {self.dest}"
         if self.kind == "link":
@@ -215,10 +211,7 @@ def execute(steps: list[Step], runner: Runner, managed_root: Path) -> None:
         if runner.dry_run:
             runner.info(f"  [dim](dry-run) {step.render()}[/]")
             continue
-        if step.kind == "download":
-            _need(step.url, step.dest, step.sha256)
-            download_verified(step.url, step.dest, step.sha256)
-        elif step.kind == "extract":
+        if step.kind == "extract":
             _need(step.src, step.dest)
             safe_extract(step.src, step.dest)
         elif step.kind == "link":

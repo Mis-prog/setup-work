@@ -22,8 +22,6 @@ scripts: []
 
 # Несекретные переменные для всех команд setup-work (пользовательское окружение важнее).
 env:
-  # uv качает интерпретаторы Python с GitHub — укажите внутреннее зеркало, если есть:
-  # UV_PYTHON_INSTALL_MIRROR: https://artifactory.corp.example/python-build-standalone
   # SSL_CERT_FILE: /etc/pki/tls/certs/corp-ca-bundle.crt
   # NODE_EXTRA_CA_CERTS: /etc/pki/tls/certs/corp-ca-bundle.crt
   HF_HUB_OFFLINE: "1"       # веса берём из HDFS, а не с huggingface.co
@@ -35,7 +33,7 @@ bridge_pip_conf: true
 # Сборка харнесов из этих git-хостов не требует ALLOW_BUILD=1 (но команды всё равно
 # показываются перед запуском, а установка из git подтверждается).
 trusted_git_hosts:
-  - git.corp.example
+  - CHANGE-ME-bitbucket-host   # хост вашего Bitbucket (без https:// и пути)
 
 # Веса моделей: "<id>:<variant>" из каталога -> zip на HDFS.
 # Внутри zip: для GGUF — .gguf-файл(ы) (шарды тоже); для vLLM — каталог в формате
@@ -60,16 +58,20 @@ engines:
   vllm:
     # Обычный каталог venv, упакованный в zip. После распаковки setup-work:
     #  - проверяет bin/python; если базового Python по старому пути нет — находит
-    #    интерпретатор той же версии (или предлагает `uv python install X.Y`) и
-    #    перепрописывает pyvenv.cfg и bin/python*;
+    #    установленный интерпретатор той же версии и перепрописывает pyvenv.cfg и
+    #    bin/python*. Собирайте venv на той версии Python, что стоит на машинах:
+    #    Python не скачивается (зеркала нет);
     #  - переписывает shebang в bin/* на новое место;
     #  - запускает vLLM как `<venv>/bin/python -c "...vllm main..." serve ...`.
     uri: hdfs:///ml/engines/vllm-0.30.0-py312-cu128-venv.zip
     # path: vllm-venv                 # каталог venv внутри архива, если не находится сам
 
-# Архивы инструментов (зеркала официальных файлов; закреплённый sha256 проверяется).
+# Архивы инструментов — единственный источник uv/Node.js/Git LFS (публичных загрузок нет).
+# Это зеркала официальных файлов; закреплённый в defaults.yaml sha256 проверяется.
 # Плейсхолдеры: {version} {target} {name}
 tools:
+  uv:
+    uri: hdfs:///ml/tools/uv/{name}
   node:
     uri: hdfs:///ml/tools/node/node-v{version}-{target}.tar.xz
   git-lfs:

@@ -252,8 +252,8 @@ def _corp_table(c: dict[str, Any]) -> Table:
         )
     for sc in c.get("scripts", []):
         t.add_row(f"script {sc['name']}", OK + " done" if sc["done"] else f"{WARN} make corp-setup")
-    t.add_row("pip index", c.get("pip_index") or "default (pypi.org)")
-    t.add_row("uv index", c.get("uv_index") or "default (pypi.org)")
+    t.add_row("pip index", c.get("pip_index") or f"{WARN} not configured (make corp-registries)")
+    t.add_row("uv index", c.get("uv_index") or f"{WARN} not configured (make corp-registries)")
     if "npm_registry" in c:
         t.add_row("npm registry", c.get("npm_registry") or "?")
     a = c.get("artifacts", {})
@@ -502,15 +502,12 @@ def _run_tool_plans(cfg: Config, plans: list[bs.ToolPlan]) -> None:
 @engine_app.command("install")
 def engine_install(
     engine: str = typer.Argument(..., envvar="SETUP_WORK_ENGINE", help="llama.cpp | vllm"),
-    source: str = typer.Option(
-        "auto", "--source", envvar="SETUP_WORK_SOURCE", help="auto | corporate | upstream"
-    ),
     json_out: bool = _json_opt(),
 ) -> None:
-    """Install an inference engine: corporate artifact (HDFS) or pinned upstream release."""
+    """Install an inference engine from its corporate artifact (HDFS, NFS, HTTPS)."""
     cfg, hw = STATE.cfg, STATE.hw
     name = get_engine(engine).name
-    steps, notes = bs.plan_engine(cfg, name, hw, source=source)
+    steps, notes = bs.plan_engine(cfg, name, hw)
     if _set_json(json_out) and STATE.runner.dry_run:
         emit_json({"engine": name, "notes": notes, "steps": [s.to_dict() for s in steps]})
         return

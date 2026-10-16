@@ -56,7 +56,7 @@ def test_git_harness_plan(tmp_path, no_req):
 harnesses:
   custom-agent:
     source: git
-    repository: https://github.com/example/agent.git
+    repository: https://bitbucket.corp.example/scm/example/agent.git
     ref: v1.2.0
     install: {method: uv}
     binaries: [agent]
@@ -81,7 +81,7 @@ def test_build_command_requires_opt_in(tmp_path, no_req):
 harnesses:
   builder:
     source: git
-    repository: https://github.com/example/agent.git
+    repository: https://bitbucket.corp.example/scm/example/agent.git
     ref: 0123abc
     install: {method: npm, build: [npm, run, build]}
 """,

@@ -2,9 +2,12 @@
 
 Policy
 ------
-* User-space first: uv, Python, Node.js, Git LFS and llama.cpp are installed from
-  pinned, sha256-verified official release archives into ``data_dir`` and linked
-  into ``bin_dir`` (default ``~/.local/bin``). No remote install scripts are run.
+* Corporate sources only: uv, Node.js and Git LFS archives and the llama.cpp / vLLM
+  builds come from ``corporate.yaml`` (``tools`` / ``engines``; HDFS, NFS or internal
+  HTTPS). Tool archives are checked against the sha256 pinned in ``defaults.yaml``.
+  Nothing is fetched from public hosts; a missing mapping is an error with a hint.
+* User-space first: everything is unpacked into ``data_dir`` and linked into
+  ``bin_dir`` (default ``~/.local/bin``). No remote install scripts are run.
 * System packages (git, curl, wget, compilers) are only installed through a
   package manager. With Homebrew this needs confirmation; with apt/dnf/... it needs
   root or ``--allow-sudo`` *and* confirmation. Otherwise setup-work prints the exact
@@ -16,12 +19,11 @@ Policy
 from __future__ import annotations
 
 import platform
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config, EngineArtifact
-from .diagnostics import Environment, detect_environment, detect_tool, version_satisfies
+from .diagnostics import Environment, detect_environment, detect_tool
 from .errors import NotFoundError, SetupWorkError, UnsupportedError, UsageError
 from .hardware import HardwareInfo
 from .runner import Runner, probe, which
@@ -152,33 +154,28 @@ def git_lfs_target() -> tuple[str, str]:
 def _archive_steps(
     cfg: Config,
     tool: str,
-    url: str,
-    sha: str,
+    sha: str | None,
     archive_name: str,
     bins: dict[str, str],
     target: str = "",
 ) -> list[Step]:
-    """download -> extract -> link each `bins` entry (link name -> path inside extract dir)."""
+    """fetch (corporate) -> extract -> link each `bins` entry (link name -> path inside)."""
     version = cfg.defaults.tools[tool].version
+    corp = cfg.corporate.tools.get(tool)
+    if corp is None:
+        raise NotFoundError(
+            f"no corporate source configured for {tool}",
+            hint=f"add tools.{tool}.uri to corporate.yaml (see examples/corp/corporate.yaml)",
+        )
+    sha = corp.sha256 or sha
+    if not sha:
+        raise UnsupportedError(f"no pinned sha256 for {tool} target {target}")
     root = cfg.tools_dir / tool / version
     archive = cfg.tools_dir / "downloads" / archive_name
-    corp = cfg.corporate.tools.get(tool)
-    if corp is not None:
-        # Mirrored upstream archive: the pinned sha256 still applies unless overridden.
-        uri = corp.uri.format(version=version, target=target, name=archive_name)
-        ref = corp.model_copy(update={"uri": uri, "format": "file"})
-        fetch = Step(
-            "fetch",
-            f"fetch {tool} {version} (corporate)",
-            artifact=ref,
-            dest=archive,
-            sha256=corp.sha256 or sha,
-            cfg=cfg,
-        )
-    else:
-        fetch = Step("download", f"download {tool} {version}", url=url, sha256=sha, dest=archive)
+    uri = corp.uri.format(version=version, target=target, name=archive_name)
+    ref = corp.model_copy(update={"uri": uri, "format": "file"})
     steps = [
-        fetch,
+        Step("fetch", f"fetch {tool} {version}", artifact=ref, dest=archive, sha256=sha, cfg=cfg),
         Step("extract", f"unpack {tool} into {root}", src=archive, dest=root),
     ]
     for link, rel in bins.items():
@@ -191,16 +188,11 @@ def _archive_steps(
 def plan_uv(cfg: Config) -> list[Step]:
     pin = cfg.defaults.tools["uv"]
     target = uv_target()
-    sha = pin.sha256.get(target)
-    if not sha or not pin.url:
-        raise UnsupportedError(f"no pinned checksum for uv target {target}")
-    url = pin.url.format(version=pin.version, target=target)
     inner = f"uv-{target}"
     return _archive_steps(
         cfg,
         "uv",
-        url,
-        sha,
+        pin.sha256.get(target),
         f"uv-{pin.version}-{target}.tar.gz",
         {"uv": f"{inner}/uv", "uvx": f"{inner}/uvx"},
         target,
@@ -210,16 +202,11 @@ def plan_uv(cfg: Config) -> list[Step]:
 def plan_node(cfg: Config) -> list[Step]:
     pin = cfg.defaults.tools["node"]
     target, ext = node_target()
-    sha = pin.sha256.get(target)
-    if not sha or not pin.url:
-        raise UnsupportedError(f"no pinned checksum for Node.js target {target}")
-    url = pin.url.format(version=pin.version, target=target, ext=ext)
     inner = f"node-v{pin.version}-{target}/bin"
     return _archive_steps(
         cfg,
         "node",
-        url,
-        sha,
+        pin.sha256.get(target),
         f"node-v{pin.version}-{target}.{ext}",
         {b: f"{inner}/{b}" for b in ("node", "npm", "npx", "corepack")},
         target,
@@ -229,15 +216,10 @@ def plan_node(cfg: Config) -> list[Step]:
 def plan_git_lfs(cfg: Config) -> list[Step]:
     pin = cfg.defaults.tools["git-lfs"]
     target, ext = git_lfs_target()
-    sha = pin.sha256.get(target)
-    if not sha or not pin.url:
-        raise UnsupportedError(f"no pinned checksum for git-lfs target {target}")
-    url = pin.url.format(version=pin.version, target=target, ext=ext)
     steps = _archive_steps(
         cfg,
         "git-lfs",
-        url,
-        sha,
+        pin.sha256.get(target),
         f"git-lfs-{target}-v{pin.version}.{ext}",
         {"git-lfs": f"git-lfs-{pin.version}/git-lfs"},
         target,
@@ -254,14 +236,14 @@ def plan_git_lfs(cfg: Config) -> list[Step]:
 
 
 def plan_python(cfg: Config) -> list[Step]:
+    """Python is never downloaded (no corporate mirror): it must come with the machine."""
     version = cfg.defaults.tools.get("python")
     v = version.version if version else "3.12"
-    uv = which("uv", [cfg.bin_dir]) or str(cfg.bin_dir / "uv")
     return [
         Step(
-            "command",
-            f"install Python {v} (uv-managed, user space)",
-            argv=[uv, "python", "install", v],
+            "manual",
+            f"install Python {v} on this machine (system package or ask the admins); "
+            "setup-work and uv do not download interpreters",
         )
     ]
 
@@ -377,6 +359,8 @@ def plan_tools(
     for t in tools:
         try:
             plans.append(_plan_one(cfg, env, t, allow_sudo, force))
+        except NotFoundError as e:
+            plans.append(ToolPlan(t, "manual", [Step("manual", e.hint or e.message)], e.message))
         except UnsupportedError as e:
             plans.append(ToolPlan(t, "unsupported", detail=e.message))
     return plans
@@ -392,11 +376,11 @@ def _plan_one(cfg: Config, env: Environment, t: str, allow_sudo: bool, force: bo
     if t == "uv":
         if st.installed and not force:
             return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
-        return ToolPlan(t, "install", plan_uv(cfg), "pinned release, sha256-verified")
+        return ToolPlan(t, "install", plan_uv(cfg), "corporate archive, sha256-verified")
     if t == "python":
         if st.installed and st.satisfies and not force:
             return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
-        return ToolPlan(t, "install", plan_python(cfg), "via uv python install")
+        return ToolPlan(t, "manual", plan_python(cfg), "Python must be preinstalled")
     if t == "pip":
         if st.installed:
             return ToolPlan(t, "satisfied", detail=f"{st.version}")
@@ -428,11 +412,11 @@ def _plan_one(cfg: Config, env: Environment, t: str, allow_sudo: bool, force: bo
             if node and node.installed
             else "not installed"
         )
-        return ToolPlan(t, "install", plan_node(cfg), f"{why}; pinned Node.js, sha256-verified")
+        return ToolPlan(t, "install", plan_node(cfg), f"{why}; corporate archive, sha256-verified")
     if t == "git-lfs":
         if st.installed and not force:
             return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
-        return ToolPlan(t, "install", plan_git_lfs(cfg), "pinned release, sha256-verified")
+        return ToolPlan(t, "install", plan_git_lfs(cfg), "corporate archive, sha256-verified")
     if t in ("git", "curl", "wget"):
         if st.installed and not force:
             return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
@@ -443,153 +427,21 @@ def _plan_one(cfg: Config, env: Environment, t: str, allow_sudo: bool, force: bo
 # ------------------------------------------------------------------ engines
 
 
-def llama_cpp_asset(hw: HardwareInfo) -> tuple[str, list[str]]:
-    """Pick the prebuilt llama.cpp asset for this machine. Returns (asset, notes)."""
-    notes: list[str] = []
-    system, arch = hw.os.system, hw.os.arch
-    if system == "Darwin":
-        return ("macos-arm64" if arch == "arm64" else "macos-x64"), notes
-    if system != "Linux":
-        raise UnsupportedError(f"no prebuilt llama.cpp for {system}")
-    if arch == "arm64":
-        if hw.accelerator == "nvidia":
-            notes.append(
-                "ARM64 + NVIDIA: prebuilt is CPU-only; build from source with -DGGML_CUDA=ON"
-            )
-        return "ubuntu-arm64", notes
-    if hw.accelerator == "nvidia":
-        cuda = hw.cuda_driver_version
-        if cuda and version_satisfies(cuda, ">=13.4"):
-            return "ubuntu-cuda-13.4-x64", notes
-        if cuda and version_satisfies(cuda, ">=12.8"):
-            return "ubuntu-cuda-12.8-x64", notes
-        notes.append(
-            f"driver supports CUDA {cuda or 'unknown'} (< 12.8): installing the CPU build; "
-            "update the NVIDIA driver or build llama.cpp from source with -DGGML_CUDA=ON"
-        )
-    notes.append(
-        "prebuilt Linux binaries target Ubuntu's glibc; other distros may need a source build"
-    )
-    return "ubuntu-x64", notes
-
-
-def _has_cuda_runtime(major: str) -> bool:
-    res = probe(["ldconfig", "-p"])
-    return res.ok and re.search(rf"libcublas\.so\.{major}\b", res.stdout) is not None
-
-
-def plan_engine(
-    cfg: Config, engine: str, hw: HardwareInfo, source: str = "auto"
-) -> tuple[list[Step], list[str]]:
-    """source: auto (corporate artifact if configured) | corporate | upstream."""
+def plan_engine(cfg: Config, engine: str, hw: HardwareInfo) -> tuple[list[Step], list[str]]:
+    """Install an engine from its corporate artifact (corporate.yaml `engines`)."""
+    if engine not in ("llama.cpp", "vllm"):
+        raise UsageError(f"unknown engine {engine!r}", hint="llama.cpp or vllm")
     art = cfg.corporate.engines.get(engine)
-    if source not in ("auto", "corporate", "upstream"):
-        raise UsageError(f"unknown source {source!r}", hint="auto, corporate or upstream")
-    if art is not None and source in ("auto", "corporate"):
-        notes = [f"using corporate artifact {art.uri}"]
-        if engine == "vllm" and (hw.os.system != "Linux" or hw.accelerator != "nvidia"):
-            notes.append("this machine is not Linux + NVIDIA: vLLM will not be able to serve here")
-        return plan_engine_artifact(cfg, engine, art), notes
-    if source == "corporate":
+    if art is None:
         raise NotFoundError(
             f"no corporate artifact configured for {engine}",
-            hint="add corporate.engines in corporate.yaml (see examples/corp/corporate.yaml)",
+            hint=f"add engines['{engine}'].uri to corporate.yaml "
+            "(see examples/corp/corporate.yaml)",
         )
-    if engine == "llama.cpp":
-        pin = cfg.defaults.engines.llama_cpp
-        asset, notes = llama_cpp_asset(hw)
-        sha = pin.assets.get(asset)
-        if not sha:
-            raise UnsupportedError(f"no pinned checksum for llama.cpp asset {asset}")
-        base = cfg.engines_dir / "llama.cpp"
-        root = base / f"{pin.release}-{asset}"
-        archive = base / "downloads" / f"llama-{pin.release}-bin-{asset}.tar.gz"
-        steps = [
-            Step(
-                "download",
-                f"download llama.cpp {pin.release} ({asset})",
-                url=pin.url.format(release=pin.release, asset=asset),
-                sha256=sha,
-                dest=archive,
-            ),
-            Step("extract", f"unpack into {root}", src=archive, dest=root),
-        ]
-        if "cuda" in asset and pin.runtime_url and asset in pin.runtime_assets:
-            major = asset.split("cuda-")[1].split(".")[0]
-            if not _has_cuda_runtime(major):
-                rt = base / "downloads" / f"cudart-llama-{pin.release}-bin-{asset}.tar.gz"
-                steps += [
-                    Step(
-                        "download",
-                        f"download CUDA {major} runtime libraries for llama.cpp",
-                        url=pin.runtime_url.format(release=pin.release, asset=asset),
-                        sha256=pin.runtime_assets[asset],
-                        dest=rt,
-                    ),
-                    Step(
-                        "extract",
-                        "unpack CUDA runtime (added to LD_LIBRARY_PATH at launch)",
-                        src=rt,
-                        dest=root / "cudart",
-                    ),
-                ]
-                notes.append(f"libcublas.so.{major} not found system-wide: bundling CUDA runtime")
-        steps += [
-            Step(
-                "link",
-                "point engines/llama.cpp/current at this release",
-                src=root / f"llama-{pin.release}",
-                dest=base / "current",
-            ),
-            Step(
-                "command",
-                "verify llama-server runs",
-                argv=[str(root / f"llama-{pin.release}" / "llama-server"), "--version"],
-            ),
-        ]
-        return steps, notes
-    if engine == "vllm":
-        if hw.os.system != "Linux" or hw.accelerator != "nvidia":
-            raise UnsupportedError(
-                "vLLM is installed only on Linux with an NVIDIA GPU",
-                hint="use llama.cpp here (make engine-install ENGINE=llama.cpp)",
-            )
-        pin = cfg.defaults.engines.vllm
-        notes = []
-        if hw.cuda_driver_version and not version_satisfies(hw.cuda_driver_version, ">=12.8"):
-            notes.append(
-                f"driver reports CUDA {hw.cuda_driver_version}; vLLM {pin.version} wheels need a "
-                "recent driver (CUDA 12.8+). Update the driver if import fails."
-            )
-        cc = hw.min_compute_capability
-        if cc is not None and cc < 7.0:
-            raise UnsupportedError(f"vLLM requires compute capability >= 7.0 (found {cc})")
-        venv = cfg.engines_dir / "vllm" / ".venv"
-        uv = which("uv", [cfg.bin_dir]) or "uv"
-        steps = [
-            Step(
-                "command",
-                f"create Python {pin.python} environment for vLLM",
-                argv=[uv, "venv", "--python", pin.python, str(venv)],
-                when=lambda: not (venv / "bin" / "python").exists(),
-            ),
-            Step(
-                "command",
-                f"install vllm=={pin.version} (large: PyTorch + CUDA wheels)",
-                argv=[
-                    uv,
-                    "pip",
-                    "install",
-                    "--python",
-                    str(venv / "bin" / "python"),
-                    f"vllm=={pin.version}",
-                ],
-                timeout=3600,
-            ),
-            Step("command", "verify vLLM imports", argv=[str(venv / "bin" / "vllm"), "--version"]),
-        ]
-        return steps, notes
-    raise UsageError(f"unknown engine {engine!r}", hint="llama.cpp or vllm")
+    notes = [f"using corporate artifact {art.uri}"]
+    if engine == "vllm" and (hw.os.system != "Linux" or hw.accelerator != "nvidia"):
+        notes.append("this machine is not Linux + NVIDIA: vLLM will not be able to serve here")
+    return plan_engine_artifact(cfg, engine, art), notes
 
 
 def path_hint(cfg: Config) -> str:
@@ -667,19 +519,11 @@ def repair_venv(venv: Path, cfg: Config, runner: Runner) -> list[str]:
     if not _python_works(py):
         interp = _find_interpreter(version, meta.get("home"), cfg)
         if interp is None:
-            uv = which("uv", [cfg.bin_dir])
-            if uv and runner.confirm(
-                f"The vLLM venv needs Python {version}, which is not installed. "
-                f"Install it with `uv python install {version}`?"
-            ):
-                runner.run([uv, "python", "install", version], timeout=1800)
-                interp = _find_interpreter(version, None, cfg)
-        if interp is None:
             raise UnsupportedError(
                 f"the vLLM venv was built with Python {version} (home={meta.get('home')}), "
-                "which is not available on this machine",
-                hint=f"install Python {version} (e.g. `uv python install {version}` with "
-                "UV_PYTHON_INSTALL_MIRROR set to the corporate mirror) and re-run",
+                "which is not installed on this machine",
+                hint=f"install Python {version} here (system package / admins) or rebuild the "
+                "venv zip with the Python version the machines have",
             )
         lines = pv.read_text(encoding="utf-8").splitlines()
         lines = [

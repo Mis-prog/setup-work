@@ -1,7 +1,7 @@
 """Corporate environment integration.
 
 * ``apply_environment`` exports ``corporate.env`` (non-secret settings such as
-  ``UV_PYTHON_INSTALL_MIRROR`` or ``NPM_CONFIG_REGISTRY``) for every subprocess,
+  ``UV_PYTHON_DOWNLOADS`` or ``NPM_CONFIG_REGISTRY``) for every subprocess,
   without overriding variables the user already set.
 * uv ignores ``pip.conf``. When corporate scripts configure pip (index-url,
   extra-index-url, trusted-host, cert), ``pip_conf_bridge`` maps them to the
