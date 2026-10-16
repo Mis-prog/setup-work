@@ -442,7 +442,7 @@ def test_bootstrap_sh_reads_bootstrap_env(tmp_path):
     )
     assert out.returncode == 0, out.stderr
     assert "refusing secret-like key CORP_TOKEN" in out.stdout
-    assert "pip install --user" in out.stdout and "uv==0.12.13" in out.stdout
+    assert "pip install" in out.stdout and "--target" in out.stdout and "uv==0.12.13" in out.stdout
     assert "re-resolved" in out.stdout
 
 
@@ -528,3 +528,48 @@ def test_bootstrap_sh_keeps_a_foreign_uv_toml(tmp_path):
     out = _run_registries(env)
     assert out.returncode != 0 and "was not written by setup-work" in out.stderr
     assert (home / ".config" / "uv" / "uv.toml").read_text() == "native-tls = true\n"
+
+
+def test_setup_work_home_puts_everything_in_one_folder(tmp_path, monkeypatch):
+    home = tmp_path / "nfs" / "setup-work"
+    monkeypatch.delenv("SETUP_WORK_USER_CONFIG_DIR")
+    monkeypatch.delenv("SETUP_WORK_BIN_DIR")
+    monkeypatch.setenv("SETUP_WORK_HOME", str(home))
+    for k in ("PIP_CONFIG_FILE", "UV_CONFIG_FILE", "NPM_CONFIG_USERCONFIG"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = Config()
+    assert cfg.user_dir == home / "config"
+    assert (cfg.data_dir, cfg.state_dir, cfg.bin_dir) == (
+        home / "data",
+        home / "state",
+        home / "bin",
+    )
+    assert cfg.models_dir == home / "data" / "models"
+    corporate.apply_environment(cfg)
+    assert os.environ["UV_CONFIG_FILE"] == str(home / "registries" / "uv.toml")
+    assert os.environ["PIP_CONFIG_FILE"] == str(home / "registries" / "pip.conf")
+    assert os.environ["NPM_CONFIG_USERCONFIG"] == str(home / "registries" / "npmrc")
+    for k in ("PIP_CONFIG_FILE", "UV_CONFIG_FILE", "NPM_CONFIG_USERCONFIG", "UV_CACHE_DIR"):
+        monkeypatch.delenv(k)
+    monkeypatch.delenv("npm_config_cache")
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL")
+
+
+def test_bootstrap_sh_init_with_setup_work_home(tmp_path):
+    nfs = tmp_path / "nfs" / "setup-work"
+    env = {"HOME": str(tmp_path / "h"), "PATH": "/usr/bin:/bin", "SETUP_WORK_HOME": str(nfs)}
+    for _ in range(2):  # second run keeps the filled-in files
+        out = subprocess.run(
+            ["sh", str(ROOT / "scripts" / "bootstrap.sh"), "--init"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert out.returncode == 0, out.stderr
+    assert "keep" in out.stdout
+    for f in ("bootstrap.env", "corporate.yaml", "harnesses.yaml"):
+        assert (nfs / "config" / f).is_file()
+    env_sh = (nfs / "env.sh").read_text()
+    assert f'export SETUP_WORK_HOME="{nfs}"' in env_sh
+    assert 'UV_CONFIG_FILE="$SETUP_WORK_HOME/registries/uv.toml"' in env_sh
+    assert not (tmp_path / "h").exists()  # nothing written into the container's HOME

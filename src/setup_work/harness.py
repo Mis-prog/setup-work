@@ -168,7 +168,7 @@ def plan_install(
     if "CHANGE-ME" in f"{spec.ref} {spec.repository} {spec.path}":
         raise UsageError(
             f"recipe {name} still contains the CHANGE-ME placeholder",
-            hint="set the real repository/ref in ~/.config/setup-work/harnesses.yaml",
+            hint=f"set the real repository/ref in {cfg.user_dir / 'harnesses.yaml'}",
         )
     root = harness_root(cfg, name)
     plan = HarnessPlan(name, spec)

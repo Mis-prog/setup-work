@@ -14,19 +14,40 @@
 Нужны `git`, `make`, `python3` ≥ 3.11 (зеркала Python нет — он должен стоять на машине),
 для HDFS — клиент `hdfs` и билет Kerberos (`kinit`).
 
+Всё храним в **одной папке на NFS** (`SETUP_WORK_HOME`), поэтому пересоздание
+контейнера ничего не стирает:
+
 ```bash
-git clone https://<bitbucket-host>/scm/<PROJECT>/setup-work.git && cd setup-work
-make init          # создаст ~/.config/setup-work/ из шаблонов — заполните их
-make bootstrap     # pip/npm/uv → uv → окружение проекта → Node.js
-make doctor        # что настроено и чего не хватает
+cd ~/nfs/setup-work && git clone https://<bitbucket-host>/scm/<PROJECT>/setup-work.git
+cd setup-work
+make init SETUP_WORK_HOME=~/nfs/setup-work   # шаблоны настроек + env.sh — заполните config/
+. ~/nfs/setup-work/env.sh                    # ← в каждом новом контейнере / shell
+make bootstrap                               # pip/npm/uv → uv → окружение проекта → Node.js
+make doctor                                  # что настроено и чего не хватает
 ```
 
-`~/.local/bin` должен быть в `PATH` (setup-work профиль shell не правит):
-`export PATH="$HOME/.local/bin:$PATH"`.
+В новом контейнере достаточно `. ~/nfs/setup-work/env.sh`: настройки, реестры, uv,
+модели, движки и харнессы уже на NFS. В HOME контейнера setup-work ничего не пишет.
+
+```text
+~/nfs/setup-work/
+├── env.sh          PATH, PIP_CONFIG_FILE, UV_CONFIG_FILE, NPM_CONFIG_USERCONFIG, GIT_CONFIG_GLOBAL, кэши
+├── gitconfig       git config --global (логин Bitbucket, CA) — тоже переживает контейнер
+├── config/         bootstrap.env, corporate.yaml, harnesses.yaml   ← это заполняете вы
+├── registries/     pip.conf, uv.toml, npmrc                        ← пишет make registries
+├── bin/            uv, node, бинарники харнессов
+├── data/           модели, движки, харнессы, архивы
+├── state/          логи и состояние серверов
+├── cache/          кэш uv и npm
+└── setup-work/     этот репозиторий (можно и в другом месте)
+```
+
+Без `SETUP_WORK_HOME` используются обычные места: `~/.config/setup-work/`,
+`~/.local/share/setup-work/`, `~/.local/bin`.
 
 ## Где что указать
 
-Все настройки — в одной папке **`~/.config/setup-work/`** (`make init` кладёт туда шаблоны):
+Настройки — в `config/` (`$SETUP_WORK_HOME/config` или `~/.config/setup-work/`):
 
 | Файл | Что в нём |
 |---|---|
@@ -49,16 +70,18 @@ SETUP_WORK_NPM_AUTH_FILE=~/nfs/tokens/npm-token-base64.txt
 SETUP_WORK_UV_FROM_PIP=1                   # uv из корпоративного PyPI (или SETUP_WORK_UV_ARCHIVE=…)
 ```
 
-`make registries` записывает (права 600):
+`make registries` записывает (права 600) в `$SETUP_WORK_HOME/registries/`
+(без `SETUP_WORK_HOME` — в обычные места: `~/.config/pip/pip.conf`, `~/.config/uv/uv.toml`, `~/.npmrc`):
 
 | Файл | Что пишется |
 |---|---|
-| `~/.config/pip/pip.conf` | `index-url`, `trusted-host` (остальные ваши настройки сохраняются) |
-| `~/.config/uv/uv.toml` | индекс по умолчанию, `python-downloads = "never"` (файл целиком ведёт setup-work) |
-| `~/.npmrc` | `registry`, токен, `strict-ssl`/`cafile` (остальное сохраняется) |
+| `pip.conf` | `index-url`, `trusted-host` (остальные ваши настройки сохраняются) |
+| `uv.toml` | индекс по умолчанию, `python-downloads = "never"` (файл целиком ведёт setup-work) |
+| `npmrc` | `registry`, токен, `strict-ssl`/`cafile` (остальное сохраняется) |
 
-Каждый инструмент читает свой файл сам, поэтому `pip`, `uv` и `npm` работают через
-корпоративный реестр и вне setup-work. После смены токена — снова `make registries`.
+`env.sh` направляет на них `pip`, `uv` и `npm`, поэтому они работают через
+корпоративный реестр и вне setup-work. Проверка: `pip config list`, `npm config get registry`,
+`cat $UV_CONFIG_FILE`. После смены токена — снова `make registries`.
 
 ## Команды
 
@@ -95,7 +118,7 @@ make harness-doctor
 | vLLM | каталог venv, упакованный `zip -r` | `engines: vllm` |
 | uv, Node.js | официальные архивы (sha256 проверяется по `config/defaults.yaml`) | `tools: uv / node` |
 
-`id:variant` — из `make models`. Свои модели — в `~/.config/setup-work/models.yaml`
+`id:variant` — из `make models`. Свои модели — в `config/models.yaml`
 (пример: `examples/corp/models.yaml`). venv vLLM собирайте на той же ОС, версии Python и
 CUDA, что у целевых машин: после распаковки setup-work перепривязывает его к
 установленному Python той же версии и переписывает shebang в `bin/*`.
@@ -106,7 +129,9 @@ CUDA, что у целевых машин: после распаковки setup
 ## Харнессы из Bitbucket
 
 Ссылка — из кнопки Clone: `https://<bitbucket-host>/scm/<PROJECT>/<repo>.git`. Логин и
-токен git берёт из credential helper (`git config --global credential.helper store`),
+токен git берёт из credential helper
+(`git config --global credential.helper "store --file $SETUP_WORK_HOME/git-credentials"` —
+с `env.sh` настройка и токен лежат на NFS),
 корпоративный CA — `git config --global http.sslCAInfo /path/to/ca.crt`. Хост добавьте в
 `trusted_git_hosts` в `corporate.yaml`, тогда команды сборки из рецепта не требуют
 `ALLOW_BUILD=1`. Харнесс ставится в `~/.local/share/setup-work/harnesses/<name>/`,
@@ -119,6 +144,7 @@ CUDA, что у целевых машин: после распаковки setup
 | `no corporate PyPI configured` | заполните `SETUP_WORK_PYPI_INDEX` в `bootstrap.env`, затем `make registries` |
 | `Failed to fetch https://files.pythonhosted.org/…`, `dns error` | uv не видит корпоративный индекс: `make registries`, проверьте `~/.config/uv/uv.toml` |
 | `uv.toml exists and was not written by setup-work` | перенесите свои настройки и удалите файл, затем `make registries` |
+| в новом контейнере `uv: command not found`, pip/npm смотрят в интернет | не выполнен `. ~/nfs/setup-work/env.sh` |
 | `uv.lock` изменён после `make` | так и должно быть (lock пересобран под корпоративный индекс); перед `git pull` — `git checkout uv.lock` |
 | `no corporate source for uv` / `for node` | `SETUP_WORK_UV_FROM_PIP=1` или `SETUP_WORK_UV_ARCHIVE` в `bootstrap.env`; `tools.node` в `corporate.yaml` |
 | `Python … is not installed` | Python не скачивается: поставьте нужную версию на машину (пакет, админы) |
@@ -152,7 +178,7 @@ make format
 ```text
 Makefile ─ SETUP_WORK_* ─▶ setup_work.cli
   scripts/bootstrap.sh  pip.conf / uv.toml / .npmrc, uv, uv sync   (до Python-окружения)
-  config.py      YAML: config/ + ~/.config/setup-work/
+  config.py      YAML: config/ репозитория + ваш config/ ($SETUP_WORK_HOME/config)
   bootstrap.py   uv, Node.js, движки из corporate.yaml
   hub.py, artifacts.py   модели: HDFS/NFS/HTTPS → распаковка
   hardware.py, memory.py, models.py, engines.py   железо → оценка памяти → подбор

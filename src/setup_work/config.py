@@ -548,10 +548,19 @@ def builtin_config_dir() -> Path:
     return Path(__file__).resolve().parent / "_config"
 
 
+def setup_work_home() -> Path | None:
+    """One persistent root (e.g. on NFS) for settings, data, state, bin and caches."""
+    env = os.environ.get("SETUP_WORK_HOME")
+    return Path(env).expanduser() if env else None
+
+
 def user_config_dir() -> Path:
     env = os.environ.get("SETUP_WORK_USER_CONFIG_DIR")
     if env:
         return Path(env).expanduser()
+    home = setup_work_home()
+    if home:
+        return home / "config"
     xdg = os.environ.get("XDG_CONFIG_HOME")
     return (Path(xdg) if xdg else Path.home() / ".config") / "setup-work"
 
@@ -644,14 +653,19 @@ class Config:
 
     @property
     def data_dir(self) -> Path:
-        return expand_path(self.defaults.paths.data_dir)
+        home = setup_work_home()
+        return home / "data" if home else expand_path(self.defaults.paths.data_dir)
 
     @property
     def state_dir(self) -> Path:
-        return expand_path(self.defaults.paths.state_dir)
+        home = setup_work_home()
+        return home / "state" if home else expand_path(self.defaults.paths.state_dir)
 
     @property
     def bin_dir(self) -> Path:
+        home = setup_work_home()
+        if home and not os.environ.get("SETUP_WORK_BIN_DIR"):
+            return home / "bin"
         return expand_path(self.defaults.paths.bin_dir)
 
     @property

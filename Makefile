@@ -9,7 +9,11 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
-UV ?= $(shell command -v uv 2>/dev/null || echo "$(HOME)/.local/bin/uv")
+# SETUP_WORK_HOME: one persistent folder (e.g. on NFS) for settings, registries, bin,
+# models, engines, harnesses and caches. Set it once with `make init SETUP_WORK_HOME=…`,
+# then `. $SETUP_WORK_HOME/env.sh` in every new shell / container.
+export SETUP_WORK_HOME
+UV ?= $(shell command -v uv 2>/dev/null || echo "$(if $(SETUP_WORK_HOME),$(SETUP_WORK_HOME)/bin,$(HOME)/.local/bin)/uv")
 CLI := $(UV) run --no-sync --quiet setup-work
 VENV_STAMP := .venv/.setup-work-synced
 
@@ -62,26 +66,20 @@ endef
 	serve-status serve-logs serve-test harness-list harness-install harness-update \
 	harness-remove harness-doctor test lint format check clean
 
-CONFIG_DIR = $${SETUP_WORK_USER_CONFIG_DIR:-$${XDG_CONFIG_HOME:-$$HOME/.config}/setup-work}
-
-##@ 1. Настройка (все настройки — в ~/.config/setup-work/)
+##@ 1. Настройка (все настройки — в $SETUP_WORK_HOME/config или ~/.config/setup-work/)
 help: ## Показать эту справку
 	@awk 'BEGIN {FS = ":.*## "} \
 		/^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5); next } \
 		/^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@printf '\n\033[1mС чего начать\033[0m\n'
-	@printf '  make init          # создать ~/.config/setup-work/ и заполнить\n'
-	@printf '  make bootstrap     # pip/npm/uv + uv + окружение + Node.js\n'
+	@printf '  make init SETUP_WORK_HOME=~/nfs/setup-work   # папка на NFS, переживает контейнер\n'
+	@printf '  . ~/nfs/setup-work/env.sh                    # в каждом новом контейнере\n'
+	@printf '  make bootstrap                               # pip/npm/uv + uv + окружение + Node.js\n'
 	@printf '  make doctor\n'
 	@printf '\n  DRY_RUN=1 — только показать действия · YES=1 — подтвердить всё · JSON=1 — JSON\n\n'
 
-init: ## Создать ~/.config/setup-work/{bootstrap.env,corporate.yaml,harnesses.yaml} из шаблонов
-	@d="$(CONFIG_DIR)"; mkdir -p "$$d"; \
-	for f in bootstrap.env corporate.yaml harnesses.yaml; do \
-		if [ -e "$$d/$$f" ]; then echo "  keep    $$d/$$f (already exists)"; \
-		else cp "examples/corp/$$f" "$$d/$$f" && echo "  created $$d/$$f"; fi; \
-	done; \
-	echo "Fill in the CHANGE-ME / example values, then: make bootstrap"
+init: ## Шаблоны настроек (+ env.sh, если задан SETUP_WORK_HOME=папка на NFS)
+	@sh scripts/bootstrap.sh --init
 
 registries: ## Записать PyPI/npm из bootstrap.env в pip.conf, uv.toml и .npmrc
 	@sh scripts/bootstrap.sh --registries-only

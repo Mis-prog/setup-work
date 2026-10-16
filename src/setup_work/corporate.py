@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .config import Config
+from .config import Config, setup_work_home
 from .runner import probe, which
 
 
@@ -60,9 +60,26 @@ def uv_index() -> str | None:
     return data.get("index-url")
 
 
+def registry_env() -> dict[str, str]:
+    """With SETUP_WORK_HOME, pip/uv/npm config and caches live there (survive containers)."""
+    home = setup_work_home()
+    if home is None:
+        return {}
+    return {
+        "PIP_CONFIG_FILE": str(home / "registries" / "pip.conf"),
+        "UV_CONFIG_FILE": str(home / "registries" / "uv.toml"),
+        "NPM_CONFIG_USERCONFIG": str(home / "registries" / "npmrc"),
+        "UV_CACHE_DIR": str(home / "cache" / "uv"),
+        "npm_config_cache": str(home / "cache" / "npm"),
+        "GIT_CONFIG_GLOBAL": str(home / "gitconfig"),
+    }
+
+
 def apply_environment(cfg: Config) -> None:
     """Export `corporate.yaml` env for every subprocess (variables you set win)."""
     os.environ.setdefault("UV_PYTHON_DOWNLOADS", "never")  # there is no Python mirror
+    for k, v in registry_env().items():
+        os.environ.setdefault(k, v)
     try:
         env = cfg.corporate.env
     except Exception:  # invalid corporate.yaml is reported by `config validate`
