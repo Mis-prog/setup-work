@@ -8,7 +8,7 @@ Exit codes are part of the public interface (scripts depend on them):
     3  a required external dependency is missing
     4  the requested configuration is unsupported on this machine
     5  aborted by the user (confirmation declined)
-    6  requested object not found (model, harness, profile, server)
+    6  requested object not found (model, harness, server)
     7  a check did not pass (doctor / harness-doctor / serve-test / config-validate)
 """
 

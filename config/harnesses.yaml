@@ -5,7 +5,7 @@
 # bump them with `make harness-update NAME=<name> VERSION=<version>` or override the
 # recipe in ~/.config/setup-work/harnesses.yaml.
 #
-# Recipe schema (see examples/custom-harness.yaml for a complete example):
+# Recipe schema (see examples/corp/harnesses.yaml for git examples):
 #   source:      npm | pypi | git | local
 #   package:     package name (npm / pypi)
 #   version:     exact version (npm / pypi). "latest" is allowed but reported as unpinned.

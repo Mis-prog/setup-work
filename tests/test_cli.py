@@ -58,8 +58,7 @@ def test_recommend_via_env_like_makefile(capsys, monkeypatch):
         (["model", "info", "nope"], 6),
         (["serve", "qwen3-8b:q4_k_m"], 6),  # not downloaded -> never pulled implicitly
         (["harness", "install", "nope"], 6),
-        (["bootstrap", "weird-group"], 2),
-        (["setup", "nope"], 6),
+        (["bootstrap", "--tool", "git"], 2),
         (["no-such-command"], 2),
     ],
 )
@@ -101,9 +100,9 @@ def test_unsupported_serve_exit_code(capsys, monkeypatch):
 
 
 def test_bootstrap_dry_run_json(capsys):
-    code, out, _ = run(capsys, "--dry-run", "--json", "bootstrap", "node")
+    code, out, _ = run(capsys, "--dry-run", "--json", "bootstrap", "--tool", "node")
     data = json.loads(out)
-    assert code == 0 and {d["tool"] for d in data} == {"node", "npm"}
+    assert code == 0 and [d["tool"] for d in data] == ["node"]
 
 
 def test_harness_install_dry_run(capsys, monkeypatch):
@@ -114,15 +113,6 @@ def test_harness_install_dry_run(capsys, monkeypatch):
     data = json.loads(out)
     assert code == 0 and data["version"] == "0.159.1"
     assert any("@openai/codex@0.159.1" in s["action"] for s in data["steps"])
-
-
-def test_setup_dry_run_json(capsys, monkeypatch):
-    monkeypatch.setenv("SETUP_WORK_HARDWARE_FILE", str(HW_DIR / "4x-a100-80gb.json"))
-    code, out, _ = run(capsys, "--dry-run", "--json", "setup", "gpu-inference")
-    data = json.loads(out)
-    assert code == 0
-    assert data["engines"] == ["llama.cpp", "vllm"]
-    assert data["models"] == []  # never downloads without --allow-downloads
 
 
 def test_models_listing(capsys):

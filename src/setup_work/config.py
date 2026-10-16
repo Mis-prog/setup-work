@@ -29,7 +29,6 @@ CONFIG_FILES = (
     "defaults.yaml",
     "models.yaml",
     "harnesses.yaml",
-    "profiles.yaml",
     "corporate.yaml",
 )
 ENGINE_NAMES = ("llama.cpp", "vllm")
@@ -395,34 +394,6 @@ class HarnessCatalog(Strict):
         return v
 
 
-# --------------------------------------------------------------------------- profiles
-
-
-class ToolSet(Strict):
-    required: list[str] = Field(default_factory=list)
-    optional: list[str] = Field(default_factory=list)
-
-
-class ProfileModels(Strict):
-    preferences: dict[str, Any] = Field(default_factory=dict)
-    pull: list[str] = Field(default_factory=list)
-
-
-class ProfileSpec(Strict):
-    description: str = ""
-    extends: list[str] = Field(default_factory=list)
-    tools: ToolSet = Field(default_factory=ToolSet)
-    harnesses: ToolSet = Field(default_factory=ToolSet)
-    engines: list[str] = Field(default_factory=list)
-    models: ProfileModels = Field(default_factory=ProfileModels)
-    inference: dict[str, Any] = Field(default_factory=dict)
-    validation: list[str] = Field(default_factory=list)
-
-
-class ProfileCatalog(Strict):
-    profiles: dict[str, ProfileSpec]
-
-
 # --------------------------------------------------------------------------- corporate
 
 _ARTIFACT_URI_RE = re.compile(
@@ -487,29 +458,13 @@ class HdfsConfig(Strict):
     timeout_s: int = Field(6 * 3600, ge=60)
 
 
-class CorporateScript(Strict):
-    name: str
-    description: str = ""
-    argv: list[str]
-    creates: list[str] = Field(default_factory=list)  # skip when all of these exist
-
-    @field_validator("argv")
-    @classmethod
-    def _argv(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("argv must not be empty")
-        return v
-
-
 class CorporateConfig(Strict):
     hdfs: HdfsConfig = Field(default_factory=HdfsConfig)
-    scripts: list[CorporateScript] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
-    bridge_pip_conf: bool = True
     trusted_git_hosts: list[str] = Field(default_factory=list)
     models: dict[str, ArtifactRef] = Field(default_factory=dict)  # "model:variant" -> artifact
     engines: dict[str, EngineArtifact] = Field(default_factory=dict)  # llama.cpp | vllm
-    tools: dict[str, ArtifactRef] = Field(default_factory=dict)  # uv | node | git-lfs archives
+    tools: dict[str, ArtifactRef] = Field(default_factory=dict)  # uv | node archives
 
     @field_validator("env")
     @classmethod
@@ -531,7 +486,7 @@ class CorporateConfig(Strict):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.scripts or self.env or self.models or self.engines or self.tools)
+        return bool(self.env or self.models or self.engines or self.tools)
 
 
 # --------------------------------------------------------------------------- loading
@@ -552,7 +507,6 @@ def deep_merge(base: Any, override: Any) -> Any:
 _CATALOG_KEYS = {
     "models.yaml": "models",
     "harnesses.yaml": "harnesses",
-    "profiles.yaml": "profiles",
 }
 
 
@@ -594,12 +548,6 @@ def builtin_config_dir() -> Path:
     return Path(__file__).resolve().parent / "_config"
 
 
-def team_config_dir() -> Path | None:
-    """Shared team layer (e.g. a cloned config repo), between built-in and user."""
-    env = os.environ.get("SETUP_WORK_TEAM_CONFIG_DIR")
-    return Path(env).expanduser() if env else None
-
-
 def user_config_dir() -> Path:
     env = os.environ.get("SETUP_WORK_USER_CONFIG_DIR")
     if env:
@@ -634,7 +582,6 @@ class Config:
     def __init__(self, builtin_dir: Path | None = None, user_dir: Path | None = None) -> None:
         self.builtin_dir = builtin_dir or builtin_config_dir()
         self.user_dir = user_dir or user_config_dir()
-        self.team_dir = team_config_dir()
         if not (self.builtin_dir / "defaults.yaml").is_file():
             raise ConfigError(
                 f"configuration directory {self.builtin_dir} has no defaults.yaml",
@@ -645,9 +592,7 @@ class Config:
         for name in CONFIG_FILES:
             merged: dict[str, Any] = {}
             used: list[Path] = []
-            for d in (self.builtin_dir, self.team_dir, self.user_dir):
-                if d is None:
-                    continue
+            for d in (self.builtin_dir, self.user_dir):
                 p = d / name
                 if p.is_file():
                     merged = _merge_layer(name, merged, _read_yaml(p))
@@ -675,35 +620,19 @@ class Config:
         return self._parse("harnesses.yaml", HarnessCatalog)
 
     @cached_property
-    def profiles(self) -> ProfileCatalog:
-        return self._parse("profiles.yaml", ProfileCatalog)
-
-    @cached_property
     def corporate(self) -> CorporateConfig:
         return self._parse("corporate.yaml", CorporateConfig)
 
     def validate_all(self) -> list[str]:
         """Return a list of problems (empty when everything is valid)."""
         problems: list[str] = []
-        for attr in ("defaults", "models", "harnesses", "profiles", "corporate"):
+        for attr in ("defaults", "models", "harnesses", "corporate"):
             try:
                 getattr(self, attr)
             except ConfigError as e:
                 problems.append(e.message)
         if problems:
             return problems
-        names = set(self.profiles.profiles)
-        harnesses = set(self.harnesses.harnesses)
-        for pname, p in self.profiles.profiles.items():
-            for parent in p.extends:
-                if parent not in names:
-                    problems.append(f"profile {pname}: extends unknown profile {parent!r}")
-            for h in p.harnesses.required + p.harnesses.optional:
-                if h not in harnesses:
-                    problems.append(f"profile {pname}: unknown harness {h!r}")
-            for e in p.engines:
-                if e not in ENGINE_NAMES:
-                    problems.append(f"profile {pname}: unknown engine {e!r}")
         for ref in self.corporate.models:
             mid, _, vid = ref.partition(":")
             spec = self.models.models.get(mid)
@@ -749,7 +678,6 @@ class Config:
     def as_dict(self) -> dict[str, Any]:
         return {
             "builtin_dir": str(self.builtin_dir),
-            "team_dir": str(self.team_dir) if self.team_dir else None,
             "user_dir": str(self.user_dir),
             "sources": {k: [str(p) for p in v] for k, v in self.sources.items()},
             "resolved_paths": {

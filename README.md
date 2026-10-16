@@ -1,566 +1,162 @@
 # setup-work
 
-**Переносимый бутстраппер окружений для AI/ML-разработки.** Один Makefile проводит
-свежий ноутбук, рабочую станцию или удалённый GPU-сервер от состояния «ничего не
-установлено» до coding-агентов, работающих с локальной LLM, подобранной под железо:
-без sudo, без `curl | sh` и без гаданий, влезет ли модель в память.
+Настройка рабочего места для AI/ML во внутренней сети. В публичный интернет
+(GitHub, pypi.org, nodejs.org, Hugging Face) не ходит.
 
-```text
-make bootstrap                        # uv, Python, Node.js, Git LFS — в user space, с фиксированными sha256
-make doctor                           # что установлено и какое у вас железо
-make recommend TASK=coding            # какая модель/движок/квантизация подходит и почему
-make model-pull MODEL=qwen3-8b:q4_k_m
-make serve MODEL=qwen3-8b:q4_k_m      # OpenAI-совместимый API на 127.0.0.1
-make harness-install NAME=qwen-code   # coding-агент, зафиксированная версия, изолированно
-```
-
----
-
-## Содержание
-
-1. [Зачем](#зачем)
-2. [Поддерживаемые платформы](#поддерживаемые-платформы)
-3. [Быстрый старт](#быстрый-старт)
-4. [Справочник команд](#справочник-команд)
-5. [Определение железа](#определение-железа)
-6. [Подбор модели](#подбор-модели)
-7. [Инференс](#инференс)
-8. [Управление харнессами](#управление-харнессами)
-9. [Профили](#профили)
-10. [Корпоративные окружения](#корпоративные-окружения)
-11. [Справочник по конфигурации](#справочник-по-конфигурации)
-12. [Решение проблем](#решение-проблем)
-13. [Безопасность](#безопасность)
-14. [Участие в разработке](#участие-в-разработке)
-15. [Архитектура](#архитектура)
-
-Разобранные примеры: [удалённый GPU-сервер без sudo](examples/remote-gpu-no-sudo.md) ·
-[macOS Apple Silicon + llama.cpp](examples/macos-apple-silicon.md) ·
-[несколько GPU NVIDIA + vLLM](examples/multi-gpu-vllm.md) ·
-[**внутреннее окружение: артефакты в HDFS, корпоративные PyPI/npm, внутренние форки харнессов**](examples/corp/README.md) ·
-[собственные харнессы](examples/custom-harness.yaml)
-
----
-
-## Зачем
-
-Настройка машины под AI/ML — это каждый раз одни и те же 40 мелких решений. Какой
-Python? Достаточно ли свежий Node для CLI агента? Есть ли sudo? Какую CUDA
-поддерживает драйвер? Влезет ли 32B-модель на две V100 с контекстом 32k? Поддерживается
-ли этот AWQ-чекпойнт вообще на compute capability 7.0? Ответы расползаются по вики и
-устаревают.
-
-setup-work превращает эти решения в декларативную конфигурацию с зафиксированными
-версиями и детерминированный планировщик:
-
-- **Bootstrap** ставит только недостающее, в user space, из корпоративных источников
-  (HDFS, NFS, внутренний HTTPS) с зафиксированными версиями и проверкой контрольных
-  сумм. В публичный интернет (GitHub, nodejs.org, Hugging Face) setup-work не ходит.
-- **Подбор модели под железо** оценивает веса, KV-кэш и накладные расходы рантайма
-  для каждого устройства, сверяет ядра квантизации с compute capability и объясняет
-  каждое решение — и принятие, и отказ.
-- **Оркестрация инференса** запускает llama.cpp или vLLM с проверенной командной
-  строкой, безопасно отслеживает процесс и делает smoke-тест OpenAI-совместимого
-  эндпоинта.
-- **Управление харнессами** ставит coding-агентов (Claude Code, Codex, Qwen Code,
-  OpenCode, Aider или ваши собственные Git-репозитории) по декларативным рецептам.
-
-## Поддерживаемые платформы
-
-| Платформа | Статус |
-|---|---|
-| macOS 14+ на Apple Silicon | **Проверено.** Юнит-тесты; `doctor`, `hardware` и `recommend` запускались на машине M4 / 24 ГБ. |
-| macOS на Intel | Экспериментально: sha256 для uv/Node.js/Git LFS зафиксированы, не запускалось. |
-| Linux x86_64 (glibc), только CPU | Покрыто юнит-тестами с замоканным железом; CI работает на Ubuntu. Авторы пока не запускали на реальных серверах. |
-| Linux x86_64 + NVIDIA (llama.cpp, vLLM) | **Не проверено на реальных GPU.** Планирование и генерация команд протестированы на записанных профилях (V100, RTX 4090, A100, H100, смешанные). |
-| Linux arm64 | Экспериментально. |
-| Контейнеры без root | Поддерживается by design: всё пишется в `$HOME`/XDG-каталоги, лимиты памяти cgroup учитываются. |
-| Alpine / musl | Не поддерживается: нет зафиксированной сборки uv. |
-| AMD ROCm, Intel GPU | Определяются и помечаются как неподдерживаемые; считается, что есть только CPU. |
-| Windows | Не поддерживается (используйте WSL2; тоже не проверено). |
-
-«Проверено» означает, что авторы запускали это сами. Всё остальное подкреплено только
-тестами с моками — отчёты приветствуются.
+- **pip, npm, uv** — корпоративные реестры в `pip.conf`, `.npmrc`, `uv.toml`;
+- **uv и Node.js** — из корпоративных архивов;
+- **модели и движки** (llama.cpp, vLLM) — zip с HDFS / NFS / внутреннего HTTPS;
+- **подбор модели под железо** и запуск OpenAI-совместимого сервера;
+- **харнессы** (qwen-code, opencode, pi, hermes, deepseek) и **skillhub** из Bitbucket.
 
 ## Быстрый старт
 
-Требования: `git`, `make`, `tar`, доступ к корпоративному хранилищу (HDFS-клиент и
-Kerberos, NFS или внутренний HTTPS) и командный конфиг (`SETUP_WORK_TEAM_CONFIG_DIR`,
-см. [examples/corp/](examples/corp/README.md)). Нужен установленный Python 3.11+
-(зеркала Python нет, uv интерпретаторы не скачивает: `UV_PYTHON_DOWNLOADS=never`). uv
-необязателен: stage 0 возьмёт его из `SETUP_WORK_UV_ARCHIVE` или корпоративного PyPI.
+Нужны `git`, `make`, `python3` ≥ 3.11 (зеркала Python нет — он должен стоять на машине),
+для HDFS — клиент `hdfs` и билет Kerberos (`kinit`).
 
 ```bash
 git clone https://<bitbucket-host>/scm/<PROJECT>/setup-work.git && cd setup-work
-export SETUP_WORK_TEAM_CONFIG_DIR=~/setup-work-team
-make bootstrap DRY_RUN=1     # предпросмотр всех действий
-make bootstrap               # uv + окружение проекта + недостающие инструменты (user space)
-export PATH="$HOME/.local/bin:$PATH"   # добавьте в профиль shell сами
-make doctor
-make recommend TASK=coding CONTEXT=16384
-make engine-install ENGINE=llama.cpp
-make model-pull MODEL=qwen3-8b:q4_k_m
-make serve MODEL=qwen3-8b:q4_k_m CONTEXT=16384
-make serve-test
-make serve-stop
+make init          # создаст ~/.config/setup-work/ из шаблонов — заполните их
+make bootstrap     # pip/npm/uv → uv → окружение проекта → Node.js
+make doctor        # что настроено и чего не хватает
 ```
 
-Те же команды доступны через CLI: `uv run setup-work --help`.
+`~/.local/bin` должен быть в `PATH` (setup-work профиль shell не правит):
+`export PATH="$HOME/.local/bin:$PATH"`.
 
-## Справочник команд
+## Где что указать
 
-`make help` выводит все таргеты с примерами. Параметры передаются как переменные make.
-В CLI они попадают через переменные окружения `SETUP_WORK_*`, поэтому значения никогда
-не подставляются в shell-команды.
+Все настройки — в одной папке **`~/.config/setup-work/`** (`make init` кладёт туда шаблоны):
 
-| Таргет | Назначение | Основные переменные |
+| Файл | Что в нём |
+|---|---|
+| `bootstrap.env` | **URL PyPI и npm**, пути к файлам с токенами, откуда взять uv |
+| `corporate.yaml` | пути к **моделям, движкам, архивам uv/Node.js** (hdfs://, /nfs/…, https://), хост Bitbucket |
+| `harnesses.yaml` | **репозитории харнессов и skillhub** в Bitbucket (`repository`, `ref`) |
+
+Пока в файле остаётся `CHANGE-ME`, соответствующая установка не запустится.
+Токены в файлы не пишутся — только пути к файлам с ними.
+
+### bootstrap.env → pip, npm, uv
+
+```sh
+SETUP_WORK_PYPI_INDEX=https://<repo>/<path>/pypi/simple
+SETUP_WORK_PYPI_USER=token                 # если нужен логин
+SETUP_WORK_PYPI_AUTH_FILE=~/nfs/token.txt  # файл с паролем/токеном
+SETUP_WORK_PYPI_TRUSTED_HOST=<repo-host>   # только если ругается на сертификат
+SETUP_WORK_NPM_REGISTRY=https://<repo>/<path>/npm/
+SETUP_WORK_NPM_AUTH_FILE=~/nfs/tokens/npm-token-base64.txt
+SETUP_WORK_UV_FROM_PIP=1                   # uv из корпоративного PyPI (или SETUP_WORK_UV_ARCHIVE=…)
+```
+
+`make registries` записывает (права 600):
+
+| Файл | Что пишется |
+|---|---|
+| `~/.config/pip/pip.conf` | `index-url`, `trusted-host` (остальные ваши настройки сохраняются) |
+| `~/.config/uv/uv.toml` | индекс по умолчанию, `python-downloads = "never"` (файл целиком ведёт setup-work) |
+| `~/.npmrc` | `registry`, токен, `strict-ssl`/`cafile` (остальное сохраняется) |
+
+Каждый инструмент читает свой файл сам, поэтому `pip`, `uv` и `npm` работают через
+корпоративный реестр и вне setup-work. После смены токена — снова `make registries`.
+
+## Команды
+
+`make help` — полный список. Параметры передаются как переменные make.
+
+```bash
+# модели и движки
+make recommend TASK=coding CONTEXT=32768 EXPLAIN=1     # что влезет в это железо и почему
+make model-pull MODEL=qwen3-8b:q4_k_m                  # zip из corporate.yaml → распаковка
+make zip-join ZIP=/data/Qwen3.8-Flash                  # склеить .zip + .z01 + .z02 … (с подтверждением)
+make engine-install ENGINE=llama.cpp                   # или ENGINE=vllm (venv из zip, пути чинятся)
+
+# сервер
+make serve MODEL=qwen3-8b:q4_k_m CONTEXT=16384         # 127.0.0.1:8000, OpenAI API
+make serve-test ; make serve-logs FOLLOW=1 ; make serve-stop
+
+# харнессы и skillhub
+make harness-install NAME=qwen-code
+make harness-install NAME=skillhub
+make harness-doctor
+```
+
+Общие переключатели: `DRY_RUN=1` — только показать план, `YES=1` — подтвердить всё,
+`JSON=1` — вывод в JSON. Подбор под другую машину: `make hardware-json > hw.json` там,
+`make recommend HARDWARE=hw.json` здесь (готовые профили — в `examples/hardware/`).
+
+## Как упаковать артефакты
+
+| Что | Содержимое zip | Ключ в `corporate.yaml` |
 |---|---|---|
-| `help` | Таргеты и примеры | |
-| `doctor` | Система, инструменты, железо и движки. Только чтение. | |
-| `hardware` / `hardware-json` | Отчёт о железе, для человека или в JSON | |
-| `config-show` / `config-validate` | Итоговая конфигурация / проверка схемы и перекрёстных ссылок | |
-| `version` | Версия | |
-| `bootstrap` | Stage 0 (uv + venv), затем все инструменты | `DRY_RUN`, `ALLOW_SUDO` |
-| `bootstrap-python` / `-node` / `-tools` | Одна группа инструментов | |
-| `engine-install` / `engine-status` | llama.cpp / vLLM из корпоративного артефакта | `ENGINE` |
-| `models` | Каталог | `TASK` |
-| `recommend` | Ранжированные рекомендации с объяснениями | `TASK CONTEXT ENGINE CONCURRENCY TP KV_CACHE_DTYPE LIMIT EXPLAIN HARDWARE` |
-| `model-pull` / `-list` / `-info` / `-remove` | Веса из корпоративных артефактов (HDFS, NFS, HTTPS) | `MODEL` |
-| `zip-join` | Склеить части архива (`.zip`, `.z01`, `.z02`, …) по общему префиксу имени после подтверждения; результат `<префикс>.joined.zip` рядом с частями | `ZIP` (`OUT`, `ZIP_LAST=1`) |
-| `serve` | Запустить сервер (по умолчанию в фоне) | `MODEL ENGINE CONTEXT CONCURRENCY TP GPU_UTIL GPU_LAYERS THREADS HOST PORT INSTANCE SERVED_NAME ENGINE_ARGS FOREGROUND PLAN FORCE PROFILE` |
-| `serve-auto` | Лучшая *уже скачанная* модель для задачи | `TASK ENGINE CONTEXT ENGINE_ARGS` |
-| `serve-stop` / `-status` / `-logs` / `-test` | Жизненный цикл | `INSTANCE LINES FOLLOW URL` |
-| `harness-list` / `-install` / `-update` / `-remove` / `-doctor` | Coding-агенты | `NAME VERSION REF ALLOW_BUILD` |
-| `corp-setup` / `corp-registries` / `corp-status` / `corp-env` | Корпоративные скрипты, запись PyPI/npm в pip.conf/.npmrc, статус HDFS/Kerberos/зеркал, строки export | |
-| `setup` / `profiles` / `profile-show` | Профили | `PROFILE WITH_OPTIONAL ALLOW_DOWNLOADS` |
-| `test` / `lint` / `format` / `check` | Разработка | |
-| `clean` | Артефакты сборки и кэши установщика (модели и харнессы не трогает) | |
+| GGUF для llama.cpp | `.gguf` (шарды `-00001-of-0000N`), можно в подкаталоге | `models: "<id>:<variant>"` |
+| Веса для vLLM | каталог HF: `config.json`, `*.safetensors`, токенизатор | `models: "<id>:<variant>"` |
+| llama.cpp | собранный `llama-server` и его `.so` рядом | `engines: llama.cpp` |
+| vLLM | каталог venv, упакованный `zip -r` | `engines: vllm` |
+| uv, Node.js | официальные архивы (sha256 проверяется по `config/defaults.yaml`) | `tools: uv / node` |
 
-Глобальные переключатели: `DRY_RUN=1` (`--dry-run`), `YES=1` (`--yes`, подтвердить
-всё), `JSON=1` (`--json`, машиночитаемый stdout), `VERBOSE=1`.
+`id:variant` — из `make models`. Свои модели — в `~/.config/setup-work/models.yaml`
+(пример: `examples/corp/models.yaml`). venv vLLM собирайте на той же ОС, версии Python и
+CUDA, что у целевых машин: после распаковки setup-work перепривязывает его к
+установленному Python той же версии и переписывает shebang в `bin/*`.
 
-**Коды выхода:** `0` успех · `1` ошибка · `2` ошибка использования/конфигурации ·
-`3` нет зависимости · `4` не поддерживается здесь · `5` прервано (отказ в
-подтверждении) · `6` не найдено · `7` проверка не пройдена.
+Повторный `model-pull` ничего не качает, если URI и sha256 не изменились. Нужен запас
+места ~2× архива (`SETUP_WORK_MODEL_DIR` — куда распаковывать).
 
-## Определение железа
+## Харнессы из Bitbucket
 
-`make hardware` собирает:
-
-- ОС, дистрибутив, архитектуру, а также признаки контейнера и WSL.
-- Модель CPU и число логических/физических/доступных ядер (учитывается CPU affinity).
-- Общий и доступный объём RAM, а внутри контейнеров — лимит памяти cgroup.
-- GPU NVIDIA через `nvidia-smi`: общий и свободный объём VRAM по каждому устройству,
-  compute capability (на драйверах старше R510 выводится из названия GPU), версии
-  драйвера и CUDA, а также `nvcc`, если он есть.
-- Apple Silicon: unified memory и лимит рабочего набора Metal. Он оценивается как
-  ~2/3 RAM (3/4 при объёме больше 36 ГБ) или читается из `sysctl iogpu.wired_limit_mb`,
-  если вы его задали.
-- Поддерживаемые точности (fp16/bf16/int8/fp8/fp4 по compute capability).
-- Свободное место на диске для каталога данных и каталога моделей.
-
-Каждая проверка необязательна. Отсутствующие инструменты дают заметки, а не падения.
-
-VRAM показывается по каждому устройству отдельно. «Общий VRAM» — это сумма независимых
-устройств, и он никогда не считается единым пулом. Память, которую конфигурация реально
-может использовать, вычисляется для каждого движка и каждого устройства (см. ниже).
-
-Запустите `make hardware-json > hw.json` на любой машине, а затем
-`make recommend HARDWARE=hw.json` где угодно — так можно планировать под сервер прямо с
-ноутбука. В `examples/hardware/` лежат записанные профили распространённых машин.
-
-## Подбор модели
-
-В каталог (`config/models.yaml`) входят только модели с проверенными метаданными:
-геометрия внимания из `config.json`, реальные размеры артефактов и имена GGUF-файлов.
-Поле `repository` — справочный идентификатор исходного репозитория; сами веса
-setup-work берёт только из корпоративных артефактов (см.
-[Корпоративные окружения](#корпоративные-окружения)). У каждой модели есть **варианты** — конкретные скачиваемые артефакты
-с форматом, квантизацией и целевым движком. Это богаче простого списка `formats:`,
-потому что «Qwen3-8B в AWQ для vLLM» и «Qwen3-8B Q4_K_M GGUF для llama.cpp» — разные
-репозитории с разными размерами и требованиями к ядрам.
-
-Для каждой пары модель × движок планировщик:
-
-1. **Фильтрует** по типу задачи и по контексту: запрос длиннее нативного контекста
-   отклоняется, потому что RoPE scaling автоматически не настраивается.
-2. **Проверяет совместимость** каждого варианта:
-   - vLLM требует Linux + NVIDIA с compute capability ≥ 7.0.
-   - bf16 требует CC ≥ 8.0. Ниже модель запускается в fp16, если только она не
-     помечена как небезопасная для fp16 (Gemma).
-   - FP8 нативно работает на CC ≥ 8.9 и в режиме weight-only (Marlin) на 8.0–8.6.
-   - AWQ требует CC ≥ 7.5.
-   - MXFP4 нативно работает на CC ≥ 9.0 и экспериментально — на Ampere/Ada.
-   - llama.cpp принимает только GGUF, на CUDA/Metal/CPU. Сторонние конвертации
-     получают пониженную уверенность.
-3. **Оценивает память** для каждого устройства:
-   - *Веса*: фактический размер артефакта. Для MoE-моделей это **все эксперты**;
-     число активных параметров влияет на скорость, а не на память.
-   - *KV-кэш*: `2 × layers × kv_heads × head_dim × bytes × tokens × sequences`.
-     Слои со скользящим окном (Gemma 3, gpt-oss) кэшируют только `min(tokens, window)`.
-   - *Накладные расходы*: фиксированная стоимость рантайма на устройство, настраивается
-     (vLLM 2 ГиБ, llama.cpp 0,6 ГиБ).
-   - *Бюджет*: vLLM получает `min(total × gpu_memory_utilization, free − margin)` на
-     каждую GPU; llama.cpp — свободную память минус запас и накладные расходы на каждой
-     GPU, либо рабочий набор Metal, либо доступную RAM минус запас прочности.
-4. **Планирует параллелизм**:
-   - Для тензорного параллелизма vLLM перебираются TP ∈ {1, 2, 4, 8}. TP должен делить
-     число голов внимания. Веса и KV-головы шардируются, а если TP больше числа
-     KV-голов, они реплицируются. Каждый ранг ограничен самой маленькой GPU.
-     Побеждает наименьший TP, который полностью обслуживает запрошенный параллелизм.
-   - llama.cpp распределяет слои по GPU пропорционально их свободной памяти.
-     Если модель не влезает в VRAM, планировщик откатывается на *частичную выгрузку на
-     CPU* (с пониженной оценкой) или на работу только на CPU.
-5. **Ранжирует** совместимых кандидатов. Совместимость решает, *показывать ли*
-   кандидата, а оценка — *в каком порядке*:
-   `quality[task] × quant_retention × confidence × layout`.
-   Оценки качества — редакторские уровни, **а не бенчмарки**; переопределяйте их в
-   своём пользовательском конфиге.
-
-Каждая рекомендация содержит модель, движок, квантизацию, распределение памяти,
-раскладку/TP, максимальный контекст для оставшегося бюджета KV, уверенность,
-обоснование и предупреждения. `EXPLAIN=1` дополнительно показывает всех отклонённых
-кандидатов и причины. Ничего не скачивается.
-
-```text
-$ make recommend TASK=coding CONTEXT=32768 HARDWARE=examples/hardware/2x-v100-32gb.json
- 1 │ qwen2.5-coder-32b:q8_0   │ llama.cpp │ q8_0  │ 41.0 GiB │ multi-gpu │ 32768  │ high
- 2 │ qwen3-coder-30b-a3b:q8_0 │ llama.cpp │ q8_0  │ 33.8 GiB │ multi-gpu │ 262144 │ medium
- ...
-```
-
-На V100 варианты vLLM с AWQ и FP8 отклоняются (CC 7.0). bf16-чекпойнты запустились бы в
-fp16, но стоят ниже, потому что требуют больше памяти и получают среднюю уверенность.
-
-Все цифры — **оценки**. Реальное потребление зависит от версии движка, CUDA graphs,
-размеров батчей и фрагментации. Запасы настраиваются в `defaults.yaml`.
-
-## Инференс
-
-```bash
-make serve MODEL=qwen3-8b:q4_k_m                       # движок определяется вариантом
-make serve MODEL=qwen3-32b ENGINE=vllm                 # лучший подходящий вариант для vLLM
-make serve MODEL=qwen3-32b:awq ENGINE=vllm TP=2 PORT=8001 INSTANCE=big
-make serve MODEL=/models/custom.gguf                   # локальный GGUF (влезание заранее не проверяется)
-make serve MODEL=/models/custom-dir ENGINE=vllm        # локальный каталог модели (config.json + *.safetensors)
-make serve MODEL=qwen3-8b:q4_k_m PLAN=1                # только вывести план и команду
-make serve-auto TASK=coding                            # лучшая уже скачанная модель
-make serve-status ; make serve-logs FOLLOW=1 ; make serve-test ; make serve-stop
-```
-
-Что делает `serve`:
-
-- **Проверяет** совместимость движка и влезание в память до запуска. Если по оценке
-  план не влезает, запуск отклоняется (`FORCE=1` это обходит).
-- **Никогда не загружает веса сам.** При их отсутствии выдаётся ошибка с командой
-  `make model-pull`, которую нужно выполнить.
-- **Выводит итоговую командную строку.** Секреты скрыты.
-- **По умолчанию слушает `127.0.0.1`.** Любой другой адрес требует подтверждения и
-  громко предупреждает, если не задан `SETUP_WORK_API_KEY`. Ключ передаётся в
-  llama.cpp через `--api-key-file` (файл с правами 600), а в vLLM — через
-  `VLLM_API_KEY`, но никогда через argv.
-- **Избегает конфликтов портов.** Порт проверяется до запуска, и предлагается
-  свободный.
-- **Безопасно отслеживает процесс.** Сервер запускается в собственной сессии. В
-  state-файле записываются PID, группа процессов и время старта процесса. `serve-stop`
-  посылает сигнал группе (SIGTERM, затем SIGKILL по таймауту) **только если PID всё
-  ещё принадлежит процессу, запущенному setup-work**. Устаревшее состояние очищается
-  без отправки каких-либо сигналов.
-- **Проверяет готовность по HTTP** (`/health` и `/v1/models`). Если процесс завершился
-  раньше времени, показываются последние строки лога.
-- **`serve-test`** отправляет минимальный запрос `/v1/chat/completions`, а для
-  embedding-моделей — `/v1/embeddings`.
-- **Логи** пишутся в `$XDG_STATE_HOME/setup-work/logs/serve-<instance>.log`.
-  Структурированные события (команды, запуски, остановки, загрузки) — в
-  `events.jsonl` рядом.
-
-Флаги движков:
-
-- **vLLM:** `--max-model-len`, `--tensor-parallel-size`, `--gpu-memory-utilization`,
-  `--dtype`, `--served-model-name`, `--max-num-seqs`, `--kv-cache-dtype`,
-  `--runner pooling` для эмбеддингов.
-- **llama.cpp:** `-c` (контекст × слоты), `-np`, `-ngl`, `-sm layer -ts …` для
-  нескольких GPU, `-t`, а также KV-кэш q8_0 с flash attention.
-
-Дополнительные аргументы движка передаются в `ENGINE_ARGS` (разбиваются по правилам
-shell, но через shell не выполняются):
-`make serve MODEL=qwen3-32b:awq ENGINE=vllm ENGINE_ARGS='--enable-prefix-caching'`.
-
-**Добавление движка (например, SGLang).** Реализуйте протокол `InferenceEngine` в
-`engines.py` (`compatibility`, `fit`, `build_command`, `build_env`, `find_binary`) и
-зарегистрируйте его в `ENGINES`. Жизненный цикл, проверка готовности, логи и тесты от
-движка не зависят.
-
-## Управление харнессами
-
-```bash
-make harness-list
-make harness-install NAME=qwen-code            # npm, зафиксирована версия 0.24.7
-make harness-install NAME=aider VERSION=0.86.1 # переопределить зафиксированную версию
-make harness-update  NAME=qwen-code
-make harness-doctor  NAME=qwen-code            # бинарник, PATH, команда проверки, имена переменных окружения
-make harness-remove  NAME=qwen-code            # с подтверждением; удаляет только то, что создал сам
-```
-
-Встроенные рецепты сверены с npm/PyPI и официальными репозиториями 2026-10-15:
-
-| Имя | Источник | Пакет | Бинарник | Рантайм |
-|---|---|---|---|---|
-| claude-code | npm | `@anthropic-ai/claude-code` | `claude` | Node ≥ 22 |
-| codex | npm | `@openai/codex` | `codex` | Node ≥ 16 |
-| qwen-code | npm | `@qwen-code/qwen-code` | `qwen` | Node ≥ 22 |
-| opencode | npm | `opencode-ai` | `opencode` | Node |
-| aider | PyPI | `aider-chat` | `aider` | Python 3.10–3.12 (3.12 под управлением uv) |
-
-Каждый харнесс живёт в `$XDG_DATA_HOME/setup-work/harnesses/<name>/`: установки из npm
-используют там `--prefix`, а установки из PyPI получают отдельный venv uv. На бинарники
-создаются симлинки в `~/.local/bin`. Ничего не ставится глобально, и существующие файлы
-никогда не перезаписываются.
-
-**Добавление своего харнесса.** Положите рецепт в `~/.config/setup-work/harnesses.yaml`
-(полный пример: [`examples/custom-harness.yaml`](examples/custom-harness.yaml)):
-
-```yaml
-harnesses:
-  custom-agent:
-    source: git
-    repository: https://<bitbucket-host>/scm/<PROJECT>/custom-agent.git   # логин/токен из git credential helper
-    ref: v1.4.2
-    install: {method: uv, python: "3.12"}
-    binaries: [custom-agent]
-    environment:
-      required: [OPENAI_BASE_URL, OPENAI_API_KEY]   # только имена — никогда значения
-    verify: [custom-agent, --version]
-```
-
-Затем выполните:
-
-```bash
-make config-validate
-make harness-install NAME=custom-agent DRY_RUN=1
-make harness-install NAME=custom-agent
-```
-
-Валидация рецептов отклоняет:
-
-- Git-URL не по HTTPS/SSH (`file://`, `ext::`, значения, похожие на опции);
-- ref, начинающиеся с `-`;
-- неточные версии;
-- некорректные имена пакетов или бинарников;
-- имена переменных окружения в нижнем регистре.
-
-Git-команды запускаются с `GIT_TERMINAL_PROMPT=0` и `--` перед URL.
-
-## Профили
-
-| Профиль | Добавляет |
-|---|---|
-| `minimal` | git, curl (wget — опционально) |
-| `developer` | + uv, Python, Node.js/npm, Git LFS (инструменты сборки, pip — опционально) |
-| `coding-agent` | + Claude Code, Codex, Qwen Code (OpenCode, Aider — опционально) |
-| `local-llm` | + llama.cpp, настройки для локального инференса GGUF |
-| `gpu-inference` | `local-llm` + vLLM; проверяет наличие GPU NVIDIA |
-| `full` | `coding-agent` + `gpu-inference` |
-
-```bash
-make profiles
-make profile-show PROFILE=full                     # полностью развёрнутый профиль
-make setup PROFILE=coding-agent DRY_RUN=1          # план
-make setup PROFILE=coding-agent WITH_OPTIONAL=1
-make serve MODEL=qwen3-8b:q4_k_m PROFILE=local-llm # параметры инференса из профиля
-```
-
-`setup` выполняет инструменты → движки → харнессы → модели → проверку. Профили
-комбинируются через `extends`: списки объединяются по порядку, словари сливаются с
-приоритетом дочернего профиля, циклы отклоняются. Модели из `models.pull` скачиваются
-только с `ALLOW_DOWNLOADS=1`. Свои профили определяйте в
-`~/.config/setup-work/profiles.yaml`.
-
-## Корпоративные окружения
-
-Для сетей, где веса, движки и инструменты берутся из внутреннего хранилища
-(`examples/corp/`, подробное руководство: [examples/corp/README.md](examples/corp/README.md)):
-
-- **Слой конфигурации команды.** `SETUP_WORK_TEAM_CONFIG_DIR` (например, склонированный
-  репозиторий команды) находится между встроенным конфигом и пользовательским. Записи
-  каталога в нём заменяют встроенные по имени. Например, npm-рецепт `qwen-code` можно
-  заменить внутренним git-форком.
-- **`corporate.yaml`** содержит:
-  - `hdfs`: CLI `hdfs` и политику Kerberos;
-  - `scripts`: корпоративные скрипты настройки, с подтверждением и идемпотентные;
-  - `env`: несекретные переменные окружения;
-  - `bridge_pip_conf`: отображение настроек pip.conf в `UV_*`;
-  - `trusted_git_hosts`;
-  - источники артефактов для `models`, `engines` и `tools`.
-- **Артефакты** могут браться из `hdfs://` или `viewfs://` (`hdfs dfs -get` после
-  проверки Kerberos-тикета), из абсолютных путей или NFS, либо по `https://` с sha256.
-  Поддерживаются zip, tar(.gz), обычные файлы и каталоги. Распаковка идёт через
-  промежуточный каталог, атомарно и с проверкой на выход за пределы каталога.
-  Файл-маркер позволяет повторным запускам переиспользовать результат.
-- **Модели:** сопоставьте `"<id>:<variant>"` с архивом или задайте внутренним моделям
-  `source:`. Это единственный способ получить веса: `make model-pull` без настроенного
-  артефакта завершается ошибкой с подсказкой. `serve` и `recommend` работают без
-  изменений.
-- **Движки:** готовая сборка llama.cpp или venv vLLM, запакованный в zip как обычный
-  каталог. После распаковки venv чинится: базовый интерпретатор, ссылки `bin/python*`,
-  shebang-строки. Затем vLLM запускается через `bin/python`.
-- **Харнессы из внутренних форков:** многошаговые команды `build` и бинарники,
-  доступные через сгенерированные обёртки (`{name, path, interpreter: node|bun|python|sh}`).
-  `requires_commands` проверяет наличие инструментов вроде `bun`.
-- **Корпоративные PyPI и npm:** `SETUP_WORK_PYPI_*` и `SETUP_WORK_NPM_*` в
-  `bootstrap.env`. Stage 0 сам пишет `pip.conf` и `.npmrc`: токены читаются из файлов,
-  не печатаются и не попадают в argv, файлы получают права 600, остальные настройки в
-  них сохраняются. Повторно — `make corp-registries` (например, после смены токена).
-- **Stage 0:** `bootstrap.env` (только `KEY=VALUE`), `SETUP_WORK_UV_FROM_PIP=1`
-  или `SETUP_WORK_UV_ARCHIVE=hdfs://…`, а также `SETUP_WORK_PRE_SCRIPTS`. При
-  корпоративном индексе `uv.lock` заново резолвится относительно него.
-
-```bash
-export SETUP_WORK_TEAM_CONFIG_DIR=~/setup-work-team
-make bootstrap && make corp-status
-make engine-install ENGINE=vllm              # из engines.vllm в corporate.yaml
-make model-pull MODEL=qwen3-coder-30b-a3b:fp8  # из артефакта в corporate.yaml
-make setup PROFILE=corp-gpu
-```
-
-## Справочник по конфигурации
-
-Встроенные файлы лежат в `config/`. Пользовательские переопределения с теми же именами
-файлов кладутся в `~/.config/setup-work/` (или `$SETUP_WORK_USER_CONFIG_DIR`) и
-сливаются глубоко: словари объединяются, списки и скаляры заменяются.
-
-| Файл | Содержимое |
-|---|---|
-| `defaults.yaml` | пути, параметры инференса по умолчанию (host, port, utilization, запасы памяти, накладные расходы, таймауты), параметры рекомендаций, пороги загрузки, зафиксированные артефакты инструментов и движков с sha256 |
-| `models.yaml` | каталог моделей: архитектура, параметры (всего/активных), геометрия внимания, нативный контекст, типы задач, уровни качества, варианты |
-| `harnesses.yaml` | рецепты харнессов |
-| `profiles.yaml` | профили |
-| `corporate.yaml` | HDFS, корпоративные скрипты, окружение, мост pip.conf, доверенные git-хосты, источники артефактов |
-
-Слои: встроенный `config/` → команда (`$SETUP_WORK_TEAM_CONFIG_DIR`) → пользователь
-(`~/.config/setup-work`). В `models`, `harnesses` и `profiles` запись заменяется
-целиком по имени; файлы настроек сливаются глубоко.
-
-Переменные окружения:
-
-| Переменная | Действие |
-|---|---|
-| `SETUP_WORK_BIN_DIR` | куда линкуются бинарники (`~/.local/bin`) |
-| `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` | корни для данных, состояния/логов и конфигурации |
-| `SETUP_WORK_CONFIG_DIR`, `SETUP_WORK_USER_CONFIG_DIR` | каталоги встроенной / пользовательской конфигурации |
-| `SETUP_WORK_TEAM_CONFIG_DIR` | общий слой конфигурации команды |
-| `SETUP_WORK_MODEL_DIR` | куда распаковываются корпоративные артефакты моделей (`<data>/models`) |
-| `SETUP_WORK_UV_FROM_PIP`, `SETUP_WORK_UV_ARCHIVE`, `SETUP_WORK_PRE_SCRIPTS` | откуда stage 0 берёт uv (один из вариантов обязателен) и какие скрипты запускает |
-| `SETUP_WORK_PYPI_INDEX`, `_USER`, `_AUTH_FILE`, `_TRUSTED_HOST` | корпоративный PyPI → `pip.conf` (stage 0) |
-| `SETUP_WORK_NPM_REGISTRY`, `_AUTH_FILE`, `_CAFILE`, `_STRICT_SSL` | корпоративный npm → `.npmrc` (stage 0) |
-| `SETUP_WORK_API_KEY` | API-ключ для запущенных эндпоинтов |
-| `SETUP_WORK_HARDWARE_FILE` (`HARDWARE=`) | использовать записанный JSON с железом |
-| `HTTP(S)_PROXY`, `NO_PROXY` | учитываются при всех загрузках; запросы на loopback идут в обход прокси |
-
-См. [`.env.example`](.env.example). Сам setup-work `.env` не читает.
+Ссылка — из кнопки Clone: `https://<bitbucket-host>/scm/<PROJECT>/<repo>.git`. Логин и
+токен git берёт из credential helper (`git config --global credential.helper store`),
+корпоративный CA — `git config --global http.sslCAInfo /path/to/ca.crt`. Хост добавьте в
+`trusted_git_hosts` в `corporate.yaml`, тогда команды сборки из рецепта не требуют
+`ALLOW_BUILD=1`. Харнесс ставится в `~/.local/share/setup-work/harnesses/<name>/`,
+бинарники линкуются в `~/.local/bin`.
 
 ## Решение проблем
 
 | Симптом | Решение |
 |---|---|
-| `uv not found` при запуске make | `make bootstrap` или `sh scripts/bootstrap.sh`; затем добавьте `~/.local/bin` в PATH |
-| `... is not on PATH` после bootstrap | добавьте `export PATH="$HOME/.local/bin:$PATH"` в профиль shell |
-| `checksum mismatch` | прокси или зеркало изменили файл. Загрузка отброшена; проверьте прокси или осознанно обновите зафиксированную сумму. |
-| Инструменту нужен системный пакет, а sudo нет | `make doctor` выводит точную команду для администратора; либо используйте micromamba/conda-forge |
-| `not downloaded (serve never downloads implicitly)` | выполните выведенную команду `make model-pull MODEL=…` |
-| `has no artifact source` | добавьте `"<id>:<variant>"` в `models:` файла `corporate.yaml` или задайте варианту `source:` |
-| `estimated not to fit` | уменьшите `CONTEXT` / `CONCURRENCY`, возьмите вариант поменьше, задайте `TP=` или `FORCE=1`, если уверены |
-| vLLM падает с «free memory … less than desired GPU memory utilization» | GPU используют другие процессы; планировщик сам снижает utilization, когда это видит, либо задайте `GPU_UTIL=` |
-| CUDA-сборка llama.cpp не запускается на Linux | посмотрите `make serve-logs`; готовые бинарники собраны под glibc Ubuntu. Соберите из исходников с `-DGGML_CUDA=ON`. |
-| `server did not become ready` | большие модели грузятся минутами. Увеличьте `inference.ready_timeout_s`; посмотрите `serve-logs`. |
-| `port … already in use` | укажите предложенный `PORT=` |
-| Устаревшее состояние сервера после перезагрузки | `make serve-status` его покажет; `make serve-stop` или `make clean` удалит его, не посылая никаких сигналов |
+| `no corporate PyPI configured` | заполните `SETUP_WORK_PYPI_INDEX` в `bootstrap.env`, затем `make registries` |
+| `Failed to fetch https://files.pythonhosted.org/…`, `dns error` | uv не видит корпоративный индекс: `make registries`, проверьте `~/.config/uv/uv.toml` |
+| `uv.toml exists and was not written by setup-work` | перенесите свои настройки и удалите файл, затем `make registries` |
+| `uv.lock` изменён после `make` | так и должно быть (lock пересобран под корпоративный индекс); перед `git pull` — `git checkout uv.lock` |
+| `no corporate source for uv` / `for node` | `SETUP_WORK_UV_FROM_PIP=1` или `SETUP_WORK_UV_ARCHIVE` в `bootstrap.env`; `tools.node` в `corporate.yaml` |
+| `Python … is not installed` | Python не скачивается: поставьте нужную версию на машину (пакет, админы) |
+| `no valid Kerberos ticket` | `kinit`, затем повторить |
+| `does not exist on HDFS` | проверьте путь: `hdfs dfs -ls <uri>` |
+| `has no artifact source` | добавьте `"<id>:<variant>"` в `models:` в `corporate.yaml` |
+| `estimated not to fit` | меньше `CONTEXT`/`CONCURRENCY`, вариант поменьше, `TP=`, или `FORCE=1` |
+| `still contains the CHANGE-ME placeholder` | заполните `repository`/`ref` в `harnesses.yaml` |
+| `server did not become ready` | большие модели грузятся минутами: `make serve-logs` |
 
 ## Безопасность
 
-- **Никакого скрытого повышения привилегий.** sudo используется только при
-  `ALLOW_SUDO=1` *и* подтверждении — интерактивном или через `YES=1`. Установки через
-  Homebrew тоже подтверждаются.
-- **Никаких удалённых скриптов и публичных хостов.** Stage 0 и все установки
-  инструментов и движков берут архивы только из корпоративных источников
-  (`corporate.yaml`, `bootstrap.env`). Архивы инструментов сверяются с зафиксированным
-  sha256, всё распаковывается с проверками на выход за пределы каталога, симлинки и
-  файлы устройств. Если источник не настроен, команда завершается ошибкой с подсказкой.
-- **Только argv.** Все вызовы подпроцессов используют список аргументов
-  (`shell=False`). Переменные make попадают в CLI через окружение, а не через
-  подстановку в shell.
-- **Секреты.** Файлы конфигурации ссылаются только на *имена* переменных. API-ключи,
-  токены и учётные данные прокси скрываются в выводе и логах. API-ключи инференса
-  передаются через файл с правами 600 или окружение, но никогда через argv.
-- **Разрушающие операции** (`harness-remove`, `model-remove`, `clean`) перечисляют
-  ровно то, что будет удалено, и требуют подтверждения. Неинтерактивные запуски без
-  `YES=1` прерываются (код 5).
-- **Безопасность процессов.** setup-work посылает сигналы только тем процессам, чей PID
-  *и* время старта совпадают с записанным состоянием.
-- **Сетевая доступность.** По умолчанию серверы слушают localhost. Публичные адреса
-  требуют подтверждения и вызывают предупреждение, если аутентификация не настроена.
-- **Границы доверия.** Пакеты из реестров запускают собственные install-хуки, как и при
-  обычном `npm install`. Установка из Git или локального каталога выполняет код сборки
-  этого проекта, поэтому всегда требует подтверждения, а дополнительные команды
-  `install.build` требуют `ALLOW_BUILD=1`.
-- **Загрузки моделей.** Веса берутся только из корпоративных артефактов. Архивы по
-  `https://` обязаны иметь sha256; распаковка атомарная и с проверкой на выход за
-  пределы каталога.
+- Никаких публичных хостов, `curl | sh`, sudo и правок профиля shell.
+- Подпроцессы — только списком аргументов; переменные make идут через окружение.
+- Токены читаются из файлов, не печатаются и не попадают в argv; в выводе маскируются.
+- Удаление (`model-remove`, `harness-remove`, `clean`) показывает, что будет удалено, и
+  спрашивает подтверждение.
+- Сервер слушает `127.0.0.1`; другой адрес — только с подтверждением, ключ API
+  передаётся через файл или окружение.
 
-## Участие в разработке
-
-Окружение собирается только через корпоративный индекс. Вне корпоративной сети
-задайте индекс явно: `export UV_DEFAULT_INDEX=<url>/simple`.
+## Разработка
 
 ```bash
-make sync      # venv uv из uv.lock
-make check     # ruff: линтер + проверка форматирования, pytest, проверка конфигурации
+make check     # ruff + pytest + проверка конфигурации
 make format
 ```
 
-- Тесты не должны требовать GPU, сети или больших загрузок. Используйте записанные
-  профили из `examples/hardware/` и мокайте `nvidia-smi`, HDFS и подпроцессы.
-- **Новые модели:** копируйте геометрию внимания из `config.json` модели,
-  используйте реальные суммарные размеры файлов, явно перечисляйте GGUF-файлы или
-  шаблоны шардов и указывайте происхождение. Добавляйте только артефакты, существование
-  которых вы проверили.
-- **Новые харнессы:** сверьте имя пакета, бинарник и требования к рантайму с
-  официальным реестром или репозиторием и зафиксируйте точную версию.
-- **Новые движки:** реализуйте `InferenceEngine` и добавьте тесты совместимости и
-  генерации команд.
-- Сообщайте результаты на реальном железе (GPU, драйвер, версия движка) в issues.
-  Именно так записи переходят из «не проверено» в «проверено».
-
-## Архитектура
+Вне корпоративной сети задайте индекс явно: `export UV_DEFAULT_INDEX=<url>/simple`.
+Тесты не требуют GPU, сети и HDFS (всё замокано, профили железа — в `examples/hardware/`).
 
 ```text
-Makefile ─ SETUP_WORK_* env ─▶ setup_work.cli (Typer)
-                                   │
-   config.py   схемы pydantic, многослойный YAML (встроенный + пользовательский)
-   hardware.py живые проверки ▸ HardwareInfo (или записанный JSON)
-   diagnostics.py инструменты / версии / пакетные менеджеры
-   memory.py   оценка весов, KV-кэша, накладных расходов
-   engines.py  адаптеры InferenceEngine: vllm, llama.cpp (совместимость, влезание, argv)
-   models.py   рекомендатель: фильтр ▸ совместимость ▸ влезание ▸ оценка ▸ объяснение
-   hub.py      модели из артефактов: получение ▸ распаковка ▸ точка входа; список/удаление
-   inference.py планирование запуска + ServerManager (состояние, готовность, остановка, тест)
-   bootstrap.py / harness.py / profiles.py  строят планы из Step
-   steps.py    единственный исполнитель: command | download | extract | link | remove | manual
-   runner.py   подпроцессы только через argv, dry-run, подтверждения, скрытие секретов, журнал событий
+Makefile ─ SETUP_WORK_* ─▶ setup_work.cli
+  scripts/bootstrap.sh  pip.conf / uv.toml / .npmrc, uv, uv sync   (до Python-окружения)
+  config.py      YAML: config/ + ~/.config/setup-work/
+  bootstrap.py   uv, Node.js, движки из corporate.yaml
+  hub.py, artifacts.py   модели: HDFS/NFS/HTTPS → распаковка
+  hardware.py, memory.py, models.py, engines.py   железо → оценка памяти → подбор
+  inference.py   запуск и остановка сервера
+  harness.py     харнессы и skillhub
+  steps.py, runner.py    план → выполнение (dry-run, подтверждения, маскирование)
 ```
-
-Проектные решения:
-
-- **Планы отделены от исполнения.** Каждая изменяющая функция сначала строит `Step`,
-  поэтому `DRY_RUN`, планы в `--json` и подтверждения везде работают одинаково.
-- **Варианты вместо списков форматов.** Совместимость зависит от конкретного артефакта
-  (репозиторий, квантизация, ядра), а не от имени модели.
-- **Адаптеры движков отвечают за всё специфичное для движка** (совместимость, модель
-  памяти, флаги). Жизненный цикл процесса общий, потому что оба движка говорят на одном
-  OpenAI HTTP API.
-- **Python CLI за Makefile плюс POSIX stage 0.** Единственный shell-код — та часть,
-  которая должна работать до появления Python.
-
-## Лицензия
-
-MIT. См. [LICENSE](LICENSE).

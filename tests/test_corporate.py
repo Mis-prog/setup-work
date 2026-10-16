@@ -55,7 +55,6 @@ def fake_hdfs(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clear_team(monkeypatch):
-    monkeypatch.delenv("SETUP_WORK_TEAM_CONFIG_DIR", raising=False)
     for k in (
         "UV_DEFAULT_INDEX",
         "UV_INDEX_URL",
@@ -68,12 +67,12 @@ def _clear_team(monkeypatch):
 
 
 def team(tmp_path, corporate_yaml: str = "", **extra: str) -> Config:
-    d = tmp_path / "team"
-    d.mkdir(exist_ok=True)
+    """Write corporate settings into the (isolated) user config dir."""
+    d = Path(os.environ["SETUP_WORK_USER_CONFIG_DIR"])
+    d.mkdir(parents=True, exist_ok=True)
     (d / "corporate.yaml").write_text("hdfs: {kerberos: 'off'}\n" + corporate_yaml)
     for fname, body in extra.items():
         (d / fname).write_text(body)
-    os.environ["SETUP_WORK_TEAM_CONFIG_DIR"] = str(d)
     return Config()
 
 
@@ -103,13 +102,13 @@ def test_corporate_schema_rejects_secrets_and_bad_uris():
     assert ok.models["a:b"].effective_format == "zip"
 
 
-def test_team_layer_and_unknown_model_mapping(tmp_path):
+def test_user_config_and_unknown_model_mapping(tmp_path):
     cfg = team(tmp_path, "models:\n  'nope:x': {uri: hdfs:///a.zip}\n")
     assert any("not a catalog model:variant" in p for p in cfg.validate_all())
 
 
 def test_example_corp_config_is_valid(monkeypatch):
-    monkeypatch.setenv("SETUP_WORK_TEAM_CONFIG_DIR", str(ROOT / "examples" / "corp"))
+    monkeypatch.setenv("SETUP_WORK_USER_CONFIG_DIR", str(ROOT / "examples" / "corp"))
     cfg = Config()
     assert cfg.validate_all() == []
     qwen = cfg.harnesses.harnesses["qwen-code"]
@@ -187,7 +186,7 @@ def test_missing_hdfs_path_and_kerberos(tmp_path, fake_hdfs, monkeypatch):
     klist = tmp_path / "fakebin" / "klist"
     klist.write_text("#!/bin/sh\nexit 1\n")
     klist.chmod(0o755)
-    (tmp_path / "team" / "corporate.yaml").write_text(
+    (tmp_path / "userconf" / "corporate.yaml").write_text(
         "hdfs: {kerberos: required}\nmodels:\n  'qwen3-8b:q8_0': {uri: 'hdfs:///missing.zip'}\n"
     )
     cfg = Config()
@@ -312,42 +311,24 @@ def test_tool_archive_from_corporate_source(tmp_path, monkeypatch):
     assert step.sha256 == cfg.defaults.tools["node"].sha256["linux-x64"]  # pin still enforced
 
 
-# ------------------------------------------------------------ pip / scripts
+# ------------------------------------------------------------ pip / uv / env
 
 
-def test_pip_conf_bridge(tmp_path, monkeypatch):
+def test_pip_and_uv_index_are_read_from_their_own_files(tmp_path, monkeypatch):
     xdg = tmp_path / "xdgconf"
     (xdg / "pip").mkdir(parents=True)
-    (xdg / "pip" / "pip.conf").write_text(
-        "[global]\nindex-url = https://user:pw@nexus.corp/pypi/simple\n"
-        "extra-index-url = https://nexus.corp/ml/simple\n  https://nexus.corp/other/simple\n"
-        "trusted-host = nexus.corp\ncert = /etc/corp-ca.pem\n"
+    (xdg / "uv").mkdir()
+    (xdg / "pip" / "pip.conf").write_text("[global]\nindex-url = https://u:pw@nexus.corp/simple\n")
+    (xdg / "uv" / "uv.toml").write_text(
+        '[[index]]\nname = "corp"\nurl = "https://u:pw@nexus.corp/simple"\ndefault = true\n'
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    env = corporate.pip_conf_bridge()
-    assert env["UV_DEFAULT_INDEX"] == "https://user:pw@nexus.corp/pypi/simple"
-    assert env["UV_INDEX"] == "https://nexus.corp/ml/simple https://nexus.corp/other/simple"
-    assert env["UV_INSECURE_HOST"] == "nexus.corp"
-    assert corporate.mask(env["UV_DEFAULT_INDEX"]) == "https://***@nexus.corp/pypi/simple"
+    assert corporate.pip_index() == "https://u:pw@nexus.corp/simple"
+    assert corporate.uv_index() == "https://u:pw@nexus.corp/simple"
+    assert corporate.mask(corporate.uv_index()) == "https://***@nexus.corp/simple"
     monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mine/simple")
-    assert "UV_DEFAULT_INDEX" not in corporate.pip_conf_bridge()  # user setting wins
-
-
-def test_corporate_scripts_are_confirmed_and_idempotent(tmp_path):
-    marker = tmp_path / "pip.conf"
-    script = tmp_path / "setup-pypi.sh"
-    script.write_text(f"#!/bin/sh\necho configured > {marker}\n")
-    script.chmod(0o755)
-    cfg = team(
-        tmp_path, f"scripts:\n  - name: pypi\n    argv: [{script}]\n    creates: [{marker}]\n"
-    )
-    steps = corporate.plan_scripts(cfg)
-    with pytest.raises(Exception, match="confirmation required"):
-        execute(steps, Runner(interactive=False), cfg.data_dir)
-    execute(steps, RUN, cfg.data_dir)
-    assert marker.read_text().strip() == "configured"
-    assert steps[0].when is not None and steps[0].when() is False  # now skipped
+    assert corporate.uv_index() == "https://mine/simple"  # your environment wins
 
 
 def test_corporate_env_applied_without_overriding(tmp_path, monkeypatch):
@@ -356,9 +337,11 @@ def test_corporate_env_applied_without_overriding(tmp_path, monkeypatch):
         tmp_path, "env:\n  NPM_CONFIG_REGISTRY: https://corp/\n  SW_TEST_MIRROR: https://m/\n"
     )
     monkeypatch.delenv("SW_TEST_MIRROR", raising=False)
-    applied = corporate.apply_environment(cfg)
+    monkeypatch.delenv("UV_PYTHON_DOWNLOADS", raising=False)
+    corporate.apply_environment(cfg)
     assert os.environ["NPM_CONFIG_REGISTRY"] == "https://mine/"
-    assert applied["SW_TEST_MIRROR"] == "https://m/"
+    assert os.environ["SW_TEST_MIRROR"] == "https://m/"
+    assert os.environ["UV_PYTHON_DOWNLOADS"] == "never"
     monkeypatch.delenv("SW_TEST_MIRROR")
 
 
@@ -439,7 +422,7 @@ def test_binary_path_must_stay_inside():
 # ---------------------------------------------------------------- stage 0
 
 
-def test_bootstrap_sh_team_env(tmp_path):
+def test_bootstrap_sh_reads_bootstrap_env(tmp_path):
     teamdir = tmp_path / "t"
     teamdir.mkdir()
     (teamdir / "bootstrap.env").write_text(
@@ -449,7 +432,7 @@ def test_bootstrap_sh_team_env(tmp_path):
     env = {
         "HOME": str(tmp_path / "h"),
         "PATH": "/usr/bin:/bin",
-        "SETUP_WORK_TEAM_CONFIG_DIR": str(teamdir),
+        "SETUP_WORK_USER_CONFIG_DIR": str(teamdir),
     }
     out = subprocess.run(
         ["sh", str(ROOT / "scripts" / "bootstrap.sh"), "--dry-run"],
@@ -506,6 +489,12 @@ def test_bootstrap_sh_writes_registries(tmp_path):
     assert "index-url = https://token:tok%2F%2B%3Dx@repo.corp.example/pypi/simple" in pip_conf
     assert "trusted-host = repo.corp.example" in pip_conf
 
+    uv_toml = (home / ".config" / "uv" / "uv.toml").read_text()
+    assert uv_toml.startswith("# managed by setup-work")
+    assert 'url = "https://token:tok%2F%2B%3Dx@repo.corp.example/pypi/simple"' in uv_toml
+    assert "default = true" in uv_toml and 'python-downloads = "never"' in uv_toml
+    assert 'allow-insecure-host = ["repo.corp.example"]' in uv_toml
+
     npmrc = (home / ".npmrc").read_text().splitlines()
     assert npmrc == [
         "audit=false",
@@ -513,7 +502,11 @@ def test_bootstrap_sh_writes_registries(tmp_path):
         "//repo.corp.example/npm/:_authToken=QmFzZTY0",
         "strict-ssl=false",
     ]
-    for f in (home / ".config" / "pip" / "pip.conf", home / ".npmrc"):
+    for f in (
+        home / ".config" / "pip" / "pip.conf",
+        home / ".config" / "uv" / "uv.toml",
+        home / ".npmrc",
+    ):
         assert f.stat().st_mode & 0o777 == 0o600
 
 
@@ -526,3 +519,12 @@ def test_bootstrap_sh_registries_dry_run_and_missing_token(tmp_path):
     out = _run_registries(env)
     assert out.returncode == 6
     assert "cannot read npm auth file" in out.stderr
+
+
+def test_bootstrap_sh_keeps_a_foreign_uv_toml(tmp_path):
+    home, env = _registries_env(tmp_path)
+    (home / ".config" / "uv").mkdir(parents=True)
+    (home / ".config" / "uv" / "uv.toml").write_text("native-tls = true\n")
+    out = _run_registries(env)
+    assert out.returncode != 0 and "was not written by setup-work" in out.stderr
+    assert (home / ".config" / "uv" / "uv.toml").read_text() == "native-tls = true\n"

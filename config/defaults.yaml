@@ -57,13 +57,6 @@ tools:
       darwin-x64: 9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4
       linux-arm64: 5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7
       linux-x64: 2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
-  git-lfs:
-    version: 3.8.0
-    sha256:
-      darwin-arm64: caff76a7d070d8160c89bc39b6e85d98f24135b6fed038a3b4de2590d25102d8
-      darwin-amd64: f1c17aeca0b4eaab9ea606226477dbed3b84b56fe0811a9f967d2ea2b2393c53
-      linux-amd64: e455e00f15d9b95661b8d53498ffb0c3367962cf1ec73c31ab7369516cd6ab8d
-      linux-arm64: ac9c8efac980bb0505ead384d087e2acb6486fd8498691a2165fa174ec6118c2
   python:
     version: "3.12"
 

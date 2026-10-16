@@ -1,25 +1,15 @@
 #!/bin/sh
-# setup-work stage-0 bootstrap. POSIX sh, no Python required.
+# setup-work stage 0. POSIX sh; needs python3 (preinstalled, there is no Python mirror).
 #
-#  0. Optionally load team settings ($SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env),
-#     run corporate pre-scripts ($SETUP_WORK_PRE_SCRIPTS), each confirmed, and
-#     write the corporate package registries into pip.conf / .npmrc
-#     (SETUP_WORK_PYPI_* / SETUP_WORK_NPM_*, see section 0c).
-#  1. If uv is missing, obtain it from a corporate source (one is required):
-#       SETUP_WORK_UV_ARCHIVE   absolute path, hdfs:// or internal https:// URL of the
-#                               official uv tarball, sha256-verified against the pin
-#       SETUP_WORK_UV_FROM_PIP=1  `python3 -m pip install --user uv==<pin>` (corporate PyPI)
-#     Nothing is downloaded from public hosts.
-#  2. Create the project environment with `uv sync --frozen`. Index settings from
-#     pip.conf are passed to uv (uv does not read pip.conf itself).
-#
-# Never uses sudo, never pipes remote scripts into a shell, never edits shell
-# startup files. Honours HTTP(S)_PROXY / NO_PROXY through curl/wget.
+# Settings: ~/.config/setup-work/bootstrap.env (KEY=VALUE, `make init` creates it).
+#  1. registries: write the corporate PyPI into pip.conf AND uv.toml (uv reads its own
+#     file) and the npm registry into .npmrc.        -> `make registries`
+#  2. uv: if missing, take it from SETUP_WORK_UV_ARCHIVE (path, hdfs://, https://) or
+#     the corporate PyPI (SETUP_WORK_UV_FROM_PIP=1).
+#  3. project venv: `uv sync` against the corporate index.  -> `make sync`
+# Nothing is downloaded from public hosts. No sudo, no shell-profile edits.
 #
 # Usage: sh scripts/bootstrap.sh [--dry-run] [--registries-only] [--sync-only]
-#        --sync-only: only (re)create the project venv with the corporate index
-#        (used by make when uv.lock / pyproject.toml change)
-#        SETUP_WORK_DRY_RUN=1 sh scripts/bootstrap.sh
 
 set -eu
 
@@ -33,10 +23,10 @@ SHA_x86_64_unknown_linux_gnu="745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76
 say() { printf '%s\n' "$*"; }
 die() { say "error: $1" >&2; exit "${2:-1}"; }
 
-# ---- 0a. team settings: KEY=VALUE lines only, never executed as shell ---------
+# ---- settings: KEY=VALUE lines only, never executed as shell -----------------
 load_env_file() {
     [ -f "$1" ] || return 0
-    say "loading team settings from $1"
+    say "loading settings from $1"
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
         key=${line%%=*}
@@ -55,15 +45,13 @@ load_env_file() {
         say "  $key set"
     done < "$1"
 }
-if [ -n "${SETUP_WORK_TEAM_CONFIG_DIR:-}" ]; then
-    load_env_file "$SETUP_WORK_TEAM_CONFIG_DIR/bootstrap.env"
-fi
+CONFIG_DIR="${SETUP_WORK_USER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/setup-work}"
+load_env_file "$CONFIG_DIR/bootstrap.env"
 
 UV_VERSION="${SETUP_WORK_UV_VERSION:-$UV_VERSION}"
 BIN_DIR="${SETUP_WORK_BIN_DIR:-$HOME/.local/bin}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/setup-work"
 DRY_RUN="${SETUP_WORK_DRY_RUN:-}"
-ASSUME_YES="${SETUP_WORK_YES:-}"
 REGISTRIES_ONLY=
 SYNC_ONLY=
 for arg in "$@"; do
@@ -75,7 +63,6 @@ for arg in "$@"; do
     esac
 done
 case "$DRY_RUN" in 1|true|yes) DRY_RUN=1 ;; *) DRY_RUN= ;; esac
-case "$ASSUME_YES" in 1|true|yes) ASSUME_YES=1 ;; *) ASSUME_YES= ;; esac
 
 run() {
     say "  \$ $*"
@@ -83,36 +70,10 @@ run() {
     "$@"
 }
 
-confirm() {
-    [ -n "$ASSUME_YES" ] && return 0
-    [ -n "$DRY_RUN" ] && { say "  (dry-run) would ask: $1"; return 0; }
-    [ -t 0 ] || die "confirmation required: $1 (re-run with SETUP_WORK_YES=1)" 5
-    printf '%s [y/N] ' "$1"
-    read -r answer || answer=
-    case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
-}
-
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
-# ---- 0b. corporate pre-scripts (e.g. the scripts that write pip.conf/.npmrc) ---
-if [ -z "$SYNC_ONLY" ] && [ -n "${SETUP_WORK_PRE_SCRIPTS:-}" ]; then
-    old_ifs=$IFS; IFS=:
-    for script in $SETUP_WORK_PRE_SCRIPTS; do
-        IFS=$old_ifs
-        case "$script" in /*) ;; *) die "pre-script must be an absolute path: $script" 2 ;; esac
-        [ -f "$script" ] || die "pre-script not found: $script" 6
-        if confirm "Run corporate setup script $script ?"; then
-            run sh "$script"
-        else
-            say "  skipped $script"
-        fi
-    done
-    IFS=$old_ifs
-fi
-
-# ---- 0c. corporate package registries -> pip.conf / .npmrc ------------------------
-# Set in bootstrap.env (or the environment). Credentials are read from files and are
-# never printed or passed on a command line.
+# ---- 1. registries -> pip.conf, uv.toml, .npmrc ---------------------------------
+# Credentials are read from files; never printed or passed on a command line.
 #   SETUP_WORK_PYPI_INDEX         https://host/path/simple
 #   SETUP_WORK_PYPI_USER          user name in the index URL (default: token)
 #   SETUP_WORK_PYPI_AUTH_FILE     file with the password/token for the index
@@ -135,23 +96,22 @@ read_secret() {
     tr -d ' \t\r\n' < "$f"
 }
 
+UV_TOML="${UV_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml}"
+
 setup_pypi() {
     [ -n "${SETUP_WORK_PYPI_INDEX:-}" ] || return 0
     conf="${PIP_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf}"
-    user="${SETUP_WORK_PYPI_USER:-token}"
     auth="${SETUP_WORK_PYPI_AUTH_FILE:+$(expand_home "$SETUP_WORK_PYPI_AUTH_FILE")}"
-    trusted="${SETUP_WORK_PYPI_TRUSTED_HOST:-}"
-    say "configuring pip index $SETUP_WORK_PYPI_INDEX in $conf${auth:+ (credentials from $auth)}"
+    say "configuring PyPI $SETUP_WORK_PYPI_INDEX in $conf and $UV_TOML${auth:+ (credentials from $auth)}"
     [ -n "$DRY_RUN" ] && return 0
     if [ -n "$auth" ] && [ ! -r "$auth" ]; then die "cannot read the PyPI auth file: $auth" 6; fi
-    mkdir -p "$(dirname -- "$conf")"
     py=$(command -v python3 || true)
-    if [ -n "$py" ]; then
-        # configparser keeps the other settings in pip.conf; the token stays off argv.
-        "$py" -I -c '
-import configparser, os, sys
+    [ -n "$py" ] || die "python3 is required (it must be preinstalled)" 3
+    # pip.conf keeps your other settings; uv.toml is owned by setup-work. Token stays off argv.
+    "$py" -I -c '
+import configparser, json, os, sys
 from urllib.parse import quote, urlsplit, urlunsplit
-conf, index, user, auth, trusted = sys.argv[1:6]
+conf, uv_toml, index, user, auth, trusted = sys.argv[1:7]
 if auth:
     with open(auth) as fh:
         token = "".join(fh.read().split())
@@ -159,6 +119,15 @@ if auth:
     host = u.hostname + (":%d" % u.port if u.port else "")
     netloc = quote(user, safe="") + ":" + quote(token, safe="") + "@" + host
     index = urlunsplit((u.scheme, netloc, u.path, u.query, u.fragment))
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".setup-work.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
 cp = configparser.RawConfigParser()
 cp.read(conf)
 if not cp.has_section("global"):
@@ -166,26 +135,21 @@ if not cp.has_section("global"):
 cp.set("global", "index-url", index)
 if trusted:
     cp.set("global", "trusted-host", trusted)
-tmp = conf + ".setup-work.tmp"
-fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, "w") as fh:
-    cp.write(fh)
-os.replace(tmp, conf)
-' "$conf" "$SETUP_WORK_PYPI_INDEX" "$user" "$auth" "$trusted" \
-            || die "failed to write $conf" 1
-    elif [ -f "$conf" ]; then
-        die "python3 is needed to update the existing $conf; edit it by hand or remove it" 3
-    else
-        idx="$SETUP_WORK_PYPI_INDEX"
-        if [ -n "$auth" ]; then
-            tok=$(read_secret "$auth" "PyPI auth")
-            idx="${idx%%://*}://$user:$tok@${idx#*://}"
-        fi
-        ( umask 077
-          { say "[global]"; say "index-url = $idx"
-            if [ -n "$trusted" ]; then say "trusted-host = $trusted"; fi; } > "$conf" ) \
-            || die "failed to write $conf" 1
-    fi
+import io
+buf = io.StringIO()
+cp.write(buf)
+write(conf, buf.getvalue())
+
+MARK = "# managed by setup-work"
+if os.path.exists(uv_toml) and not open(uv_toml).read().startswith(MARK):
+    sys.exit("error: %s exists and was not written by setup-work; move it away first" % uv_toml)
+lines = [MARK + " (make registries): edit bootstrap.env instead", "python-downloads = \"never\""]
+if trusted:
+    lines.append("allow-insecure-host = [%s]" % json.dumps(trusted))
+lines += ["", "[[index]]", "name = \"corp\"", "url = %s" % json.dumps(index), "default = true", ""]
+write(uv_toml, "\n".join(lines))
+' "$conf" "$UV_TOML" "$SETUP_WORK_PYPI_INDEX" "${SETUP_WORK_PYPI_USER:-token}" "$auth" \
+        "${SETUP_WORK_PYPI_TRUSTED_HOST:-}" || die "failed to write $conf / $UV_TOML" 1
 }
 
 setup_npm() {
@@ -225,26 +189,7 @@ if [ -n "$REGISTRIES_ONLY" ]; then
     exit 0
 fi
 
-# ---- pip.conf -> uv (uv ignores pip.conf) --------------------------------------
-pip_index_from_conf() {
-    for f in "${PIP_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" \
-             "$HOME/.pip/pip.conf" /etc/pip.conf; do
-        [ -n "$f" ] && [ -f "$f" ] || continue
-        v=$(sed -n 's/^[[:space:]]*index-url[[:space:]]*=[[:space:]]*//p' "$f" | head -n 1)
-        if [ -n "$v" ]; then say "$v"; return 0; fi
-    done
-    return 1
-}
-if [ -z "${UV_DEFAULT_INDEX:-}" ] && [ -z "${UV_INDEX_URL:-}" ]; then
-    if [ -n "${PIP_INDEX_URL:-}" ]; then
-        export UV_DEFAULT_INDEX="$PIP_INDEX_URL"
-    elif idx=$(pip_index_from_conf); then
-        export UV_DEFAULT_INDEX="$idx"
-    fi
-    [ -n "${UV_DEFAULT_INDEX:-}" ] && say "uv will use the package index from pip settings"
-fi
-
-# ---- 1. uv ---------------------------------------------------------------------
+# ---- 2. uv ---------------------------------------------------------------------
 find_uv() {
     if command -v uv >/dev/null 2>&1; then command -v uv; return 0; fi
     if [ -x "$BIN_DIR/uv" ]; then say "$BIN_DIR/uv"; return 0; fi
@@ -360,7 +305,7 @@ else
     elif [ -n "$use_pip" ]; then
         install_uv_pip
     else
-        die "no corporate source for uv: set SETUP_WORK_UV_ARCHIVE (path, hdfs://, https://) or SETUP_WORK_UV_FROM_PIP=1 in bootstrap.env" 3
+        die "no corporate source for uv: set SETUP_WORK_UV_ARCHIVE (path, hdfs://, https://) or SETUP_WORK_UV_FROM_PIP=1 in $CONFIG_DIR/bootstrap.env (make init creates it)" 3
     fi
     UV="$BIN_DIR/uv"
     case ":$PATH:" in
@@ -371,22 +316,21 @@ else
     esac
 fi
 
-# ---- 2. project environment -----------------------------------------------------
-# uv.lock records pypi.org URLs, which are not reachable here. uv therefore always
-# re-resolves against the corporate index (locked versions are kept as preferences);
-# without a configured index it would go to pypi.org, so stop instead.
-# There is no Python mirror: uv must use an interpreter already on the machine.
-UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
+# ---- 3. project environment -----------------------------------------------------
+# uv.lock records pypi.org URLs, which are not reachable here: `uv sync` (not --frozen)
+# re-resolves against the corporate index from uv.toml, keeping the locked versions.
+# Without an index uv would go to pypi.org, so stop instead.
+UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"   # there is no Python mirror
 export UV_PYTHON_DOWNLOADS
-if [ -z "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ]; then
-    die "no corporate PyPI configured: set SETUP_WORK_PYPI_INDEX in bootstrap.env (SETUP_WORK_TEAM_CONFIG_DIR), index-url in pip.conf, or export UV_DEFAULT_INDEX" 2
+if [ -z "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ] && ! grep -qs '^\[\[index\]\]' "$UV_TOML"; then
+    die "no corporate PyPI configured: set SETUP_WORK_PYPI_INDEX in $CONFIG_DIR/bootstrap.env, then make registries" 2
 fi
 say "creating project environment (uv sync, uv.lock re-resolved against the corporate index)"
 if [ -n "$DRY_RUN" ]; then
     say "  \$ $UV sync   (in $ROOT)"
 else
     (cd "$ROOT" && "$UV" sync --quiet) \
-        || die "uv sync failed; check that Python >= 3.11 is installed (uv does not download it) and the package index (UV_DEFAULT_INDEX / pip.conf)" 1
+        || die "uv sync failed; check that Python >= 3.11 is installed (uv does not download it) and the index in $UV_TOML" 1
     mkdir -p "$ROOT/.venv" && touch "$ROOT/.venv/.setup-work-synced"
 fi
 say "stage-0 bootstrap complete"

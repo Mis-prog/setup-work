@@ -27,10 +27,6 @@ export SETUP_WORK_NAME           = $(NAME)
 export SETUP_WORK_VERSION        = $(VERSION)
 export SETUP_WORK_REF            = $(REF)
 export SETUP_WORK_ALLOW_BUILD    = $(ALLOW_BUILD)
-export SETUP_WORK_PROFILE        = $(PROFILE)
-export SETUP_WORK_WITH_OPTIONAL  = $(WITH_OPTIONAL)
-export SETUP_WORK_ALLOW_SUDO     = $(ALLOW_SUDO)
-export SETUP_WORK_ALLOW_DOWNLOADS = $(ALLOW_DOWNLOADS)
 export SETUP_WORK_INSTANCE       = $(INSTANCE)
 export SETUP_WORK_HOST           = $(HOST)
 export SETUP_WORK_PORT           = $(PORT)
@@ -60,104 +56,61 @@ define require
 		echo "error: $(1) is required, e.g. make $@ $(1)=$(3)" >&2; exit 2; fi
 endef
 
-.PHONY: help version doctor hardware hardware-json config-show config-validate \
-	bootstrap bootstrap-python bootstrap-node bootstrap-tools engine-install engine-status \
-	models recommend model-pull model-list model-info model-remove \
-	harness-list harness-install harness-update harness-remove harness-doctor \
-	serve serve-auto serve-stop serve-status serve-logs serve-test \
-	setup profiles profile-show clean test lint format check sync \
-	corp-setup corp-registries corp-status corp-env
+.PHONY: help init registries bootstrap sync doctor hardware hardware-json version \
+	config-show config-validate models recommend model-pull model-list model-info \
+	model-remove zip-join engine-install engine-status serve serve-auto serve-stop \
+	serve-status serve-logs serve-test harness-list harness-install harness-update \
+	harness-remove harness-doctor test lint format check clean
 
-##@ Общее
+CONFIG_DIR = $${SETUP_WORK_USER_CONFIG_DIR:-$${XDG_CONFIG_HOME:-$$HOME/.config}/setup-work}
+
+##@ 1. Настройка (все настройки — в ~/.config/setup-work/)
 help: ## Показать эту справку
 	@awk 'BEGIN {FS = ":.*## "} \
 		/^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5); next } \
-		/^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
-	@printf '\n\033[1mОбщие переменные\033[0m\n'
-	@printf '  DRY_RUN=1  только показать действия     YES=1  подтвердить всё     JSON=1  вывод в JSON\n'
-	@printf '  HARDWARE=examples/hardware/<f>.json   планировать под записанную машину, а не текущую\n'
-	@printf '\n\033[1mПримеры\033[0m\n'
+		/^[a-zA-Z0-9_-]+:.*## / { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@printf '\n\033[1mС чего начать\033[0m\n'
+	@printf '  make init          # создать ~/.config/setup-work/ и заполнить\n'
+	@printf '  make bootstrap     # pip/npm/uv + uv + окружение + Node.js\n'
 	@printf '  make doctor\n'
-	@printf '  make bootstrap DRY_RUN=1\n'
-	@printf '  make recommend TASK=agents CONTEXT=32768 EXPLAIN=1\n'
-	@printf '  make recommend ENGINE=vllm HARDWARE=examples/hardware/4x-a100-80gb.json\n'
-	@printf '  make model-pull MODEL=qwen3-8b:q4_k_m\n'
-	@printf '  make serve MODEL=qwen3-8b:q4_k_m CONTEXT=16384 && make serve-test\n'
-	@printf '  make serve MODEL=qwen3-32b:awq ENGINE=vllm TP=2 PORT=8001\n'
-	@printf "  make serve MODEL=qwen3-32b:awq ENGINE=vllm ENGINE_ARGS='--enable-prefix-caching'\\n"
-	@printf '  make harness-install NAME=qwen-code\n'
-	@printf '  make setup PROFILE=coding-agent DRY_RUN=1\n\n'
+	@printf '\n  DRY_RUN=1 — только показать действия · YES=1 — подтвердить всё · JSON=1 — JSON\n\n'
 
-version: $(VENV_STAMP) ## Показать версию setup-work
-	@$(CLI) version
+init: ## Создать ~/.config/setup-work/{bootstrap.env,corporate.yaml,harnesses.yaml} из шаблонов
+	@d="$(CONFIG_DIR)"; mkdir -p "$$d"; \
+	for f in bootstrap.env corporate.yaml harnesses.yaml; do \
+		if [ -e "$$d/$$f" ]; then echo "  keep    $$d/$$f (already exists)"; \
+		else cp "examples/corp/$$f" "$$d/$$f" && echo "  created $$d/$$f"; fi; \
+	done; \
+	echo "Fill in the CHANGE-ME / example values, then: make bootstrap"
 
-doctor: $(VENV_STAMP) ## Диагностика системы, инструментов, железа и движков (только чтение)
-	@$(CLI) doctor
-
-hardware: $(VENV_STAMP) ## Показать обнаруженное железо
-	@$(CLI) hardware
-
-hardware-json: $(VENV_STAMP) ## Отчёт о железе в JSON (для автоматизации)
-	@$(CLI) hardware --json
-
-config-show: $(VENV_STAMP) ## Показать итоговую конфигурацию
-	@$(CLI) config show
-
-config-validate: $(VENV_STAMP) ## Проверить всю YAML-конфигурацию
-	@$(CLI) config validate
-
-##@ Bootstrap (в user-space, идемпотентно; DRY_RUN=1 — предпросмотр, ALLOW_SUDO=1 — системные пакеты)
-bootstrap: ## Установить uv + окружение проекта, затем все недостающие инструменты
-	@sh scripts/bootstrap.sh
-	@$(CLI) bootstrap all
-
-bootstrap-python: ## Установить uv и Python под управлением uv
-	@sh scripts/bootstrap.sh
-	@$(CLI) bootstrap python
-
-bootstrap-node: $(VENV_STAMP) ## Установить зафиксированные версии Node.js + npm в ~/.local
-	@$(CLI) bootstrap node
-
-bootstrap-tools: $(VENV_STAMP) ## Установить git, git-lfs, curl, wget и инструменты сборки
-	@$(CLI) bootstrap tools
-
-engine-install: $(VENV_STAMP) ## Установить движок из корпоративного артефакта: ENGINE=llama.cpp|vllm
-	$(call require,ENGINE,ENGINE,llama.cpp)
-	@$(CLI) engine install
-
-engine-status: $(VENV_STAMP) ## Показать установленные/поддерживаемые движки
-	@$(CLI) engine status
-
-##@ Корпоративное (конфиг команды: SETUP_WORK_TEAM_CONFIG_DIR, см. examples/corp/)
-corp-setup: $(VENV_STAMP) ## Запустить корпоративные скрипты настройки (pip.conf, .npmrc, ...) с подтверждением
-	@$(CLI) corp setup
-
-corp-registries: ## Записать корпоративные PyPI/npm в pip.conf и .npmrc (SETUP_WORK_PYPI_*/NPM_* из bootstrap.env)
+registries: ## Записать PyPI/npm из bootstrap.env в pip.conf, uv.toml и .npmrc
 	@sh scripts/bootstrap.sh --registries-only
 
-zip-join: ## Склеить части архива (.zip, .z01, .z02, ...) после подтверждения: ZIP=префикс|файл.zip|папка [OUT= ZIP_LAST=1]
-	@if [ -z "$(ZIP)" ]; then \
-		echo "error: ZIP is required, e.g. make $@ ZIP=/data/Qwen3.8-Flash" >&2; exit 2; fi
-	@python3 scripts/join_zip.py "$(ZIP)" $(if $(OUT),-o "$(OUT)") $(if $(filter 1,$(ZIP_LAST)),--zip-last)
+bootstrap: ## registries → uv → окружение проекта → Node.js (из corporate.yaml)
+	@sh scripts/bootstrap.sh
+	@$(CLI) bootstrap
 
-corp-status: $(VENV_STAMP) ## HDFS-клиент, Kerberos-тикет, зеркала, настроенные артефакты
-	@$(CLI) corp status
+sync: $(VENV_STAMP) ## Пересобрать окружение проекта (uv sync через корпоративный PyPI)
 
-corp-env: $(VENV_STAMP) ## Вывести строки export для корпоративного окружения
-	@$(CLI) corp env
+# uv.lock records pypi.org; bootstrap.sh re-resolves it against the index in uv.toml.
+$(VENV_STAMP): uv.lock pyproject.toml
+	@sh scripts/bootstrap.sh --sync-only
 
-##@ Модели (ничего не загружается, кроме model-pull)
+doctor: $(VENV_STAMP) ## Диагностика: инструменты, pip/uv/npm, HDFS, железо, движки
+	@$(CLI) doctor
+
+##@ 2. Модели и движки (из corporate.yaml)
 models: $(VENV_STAMP) ## Каталог моделей [TASK=]
 	@$(CLI) models
 
-recommend: $(VENV_STAMP) ## Подобрать модели [TASK= CONTEXT= ENGINE= CONCURRENCY= TP= EXPLAIN=1]
+recommend: $(VENV_STAMP) ## Подобрать модель под железо [TASK= CONTEXT= ENGINE= CONCURRENCY= TP= EXPLAIN=1 HARDWARE=]
 	@$(CLI) recommend
 
-model-pull: $(VENV_STAMP) ## Получить веса из корпоративного артефакта: MODEL=id:variant
+model-pull: $(VENV_STAMP) ## Скачать и распаковать веса: MODEL=id:variant
 	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
 	@$(CLI) model pull
 
-model-list: $(VENV_STAMP) ## Список распакованных моделей
+model-list: $(VENV_STAMP) ## Распакованные модели
 	@$(CLI) model list
 
 model-info: $(VENV_STAMP) ## Метаданные модели: MODEL=id[:variant]
@@ -168,77 +121,87 @@ model-remove: $(VENV_STAMP) ## Удалить распакованную мод�
 	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
 	@$(CLI) model remove
 
-##@ Харнессы
-harness-list: $(VENV_STAMP) ## Рецепты харнессов и статус установки
-	@$(CLI) harness list
+zip-join: ## Склеить части архива (.zip, .z01, …) после подтверждения: ZIP=префикс|файл.zip|папка [OUT=]
+	@if [ -z "$(ZIP)" ]; then \
+		echo "error: ZIP is required, e.g. make $@ ZIP=/data/Qwen3.8-Flash" >&2; exit 2; fi
+	@python3 scripts/join_zip.py "$(ZIP)" $(if $(OUT),-o "$(OUT)") $(if $(filter 1,$(ZIP_LAST)),--zip-last)
 
-harness-install: $(VENV_STAMP) ## Установить харнесс: NAME= [VERSION= REF=]
-	$(call require,NAME,NAME,qwen-code)
-	@$(CLI) harness install
+engine-install: $(VENV_STAMP) ## Установить движок: ENGINE=llama.cpp|vllm
+	$(call require,ENGINE,ENGINE,llama.cpp)
+	@$(CLI) engine install
 
-harness-update: $(VENV_STAMP) ## Обновить харнесс: NAME= [VERSION= REF=]
-	$(call require,NAME,NAME,qwen-code)
-	@$(CLI) harness update
+engine-status: $(VENV_STAMP) ## Установленные движки
+	@$(CLI) engine status
 
-harness-remove: $(VENV_STAMP) ## Удалить харнесс: NAME=
-	$(call require,NAME,NAME,qwen-code)
-	@$(CLI) harness remove
-
-harness-doctor: $(VENV_STAMP) ## Проверить харнесс (все установленные, если NAME пуст)
-	@$(CLI) harness doctor
-
-##@ Инференс (по умолчанию слушает 127.0.0.1)
-serve: $(VENV_STAMP) ## Запустить сервер: MODEL= [ENGINE= CONTEXT= PORT= TP= ENGINE_ARGS= FOREGROUND=1 PLAN=1]
+##@ 3. Сервер (127.0.0.1 по умолчанию)
+serve: $(VENV_STAMP) ## Запустить: MODEL= [ENGINE= CONTEXT= PORT= TP= ENGINE_ARGS= FOREGROUND=1 PLAN=1]
 	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
 	@$(CLI) serve
 
-serve-auto: $(VENV_STAMP) ## Запустить лучшую скачанную модель для TASK= [ENGINE= CONTEXT= ENGINE_ARGS=]
+serve-auto: $(VENV_STAMP) ## Запустить лучшую скачанную модель для TASK=
 	@$(CLI) server auto
 
-serve-stop: $(VENV_STAMP) ## Остановить сервер [INSTANCE=default]
+serve-stop: $(VENV_STAMP) ## Остановить [INSTANCE=default]
 	@$(CLI) server stop
 
-serve-status: $(VENV_STAMP) ## Статус сервера
+serve-status: $(VENV_STAMP) ## Статус
 	@$(CLI) server status
 
-serve-logs: $(VENV_STAMP) ## Логи сервера [LINES=100 FOLLOW=1]
+serve-logs: $(VENV_STAMP) ## Логи [LINES=100 FOLLOW=1]
 	@$(CLI) server logs
 
-serve-test: $(VENV_STAMP) ## Отправить минимальный OpenAI-совместимый запрос [URL=]
+serve-test: $(VENV_STAMP) ## Тестовый запрос к OpenAI-совместимому API [URL=]
 	@$(CLI) server test
 
-##@ Профили
-setup: $(VENV_STAMP) ## Применить профиль: PROFILE=minimal|developer|coding-agent|local-llm|gpu-inference|full
-	@$(CLI) setup
+##@ 4. Харнессы и skillhub (рецепты — в ~/.config/setup-work/harnesses.yaml)
+harness-list: $(VENV_STAMP) ## Рецепты и что установлено
+	@$(CLI) harness list
 
-profiles: $(VENV_STAMP) ## Список профилей
-	@$(CLI) profile list
+harness-install: $(VENV_STAMP) ## Установить: NAME= [VERSION= REF=]
+	$(call require,NAME,NAME,qwen-code)
+	@$(CLI) harness install
 
-profile-show: $(VENV_STAMP) ## Показать итоговый профиль: PROFILE=
-	$(call require,PROFILE,PROFILE,developer)
-	@$(CLI) profile show
+harness-update: $(VENV_STAMP) ## Обновить: NAME= [VERSION= REF=]
+	$(call require,NAME,NAME,qwen-code)
+	@$(CLI) harness update
 
-##@ Разработка
-sync: $(VENV_STAMP) ## Создать/обновить virtualenv проекта из uv.lock
+harness-remove: $(VENV_STAMP) ## Удалить: NAME=
+	$(call require,NAME,NAME,qwen-code)
+	@$(CLI) harness remove
 
-# Same path as stage 0: corporate index from bootstrap.env / pip.conf, never pypi.org.
-$(VENV_STAMP): uv.lock pyproject.toml
-	@sh scripts/bootstrap.sh --sync-only
+harness-doctor: $(VENV_STAMP) ## Проверить (все установленные, если NAME пуст)
+	@$(CLI) harness doctor
 
-test: $(VENV_STAMP) ## Запустить тесты
+##@ Прочее
+hardware: $(VENV_STAMP) ## Железо [JSON=1]
+	@$(CLI) hardware
+
+hardware-json: $(VENV_STAMP) ## Железо в JSON (для HARDWARE= на другой машине)
+	@$(CLI) hardware --json
+
+config-show: $(VENV_STAMP) ## Итоговая конфигурация и откуда она взята
+	@$(CLI) config show
+
+config-validate: $(VENV_STAMP) ## Проверить YAML-конфигурацию
+	@$(CLI) config validate
+
+version: $(VENV_STAMP) ## Версия
+	@$(CLI) version
+
+test: $(VENV_STAMP) ## Тесты
 	@$(UV) run --no-sync pytest
 
 lint: $(VENV_STAMP) ## Линтер и проверка форматирования
 	@$(UV) run --no-sync ruff check .
 	@$(UV) run --no-sync ruff format --check .
 
-format: $(VENV_STAMP) ## Отформатировать код и применить безопасные исправления
+format: $(VENV_STAMP) ## Отформатировать код
 	@$(UV) run --no-sync ruff format .
 	@$(UV) run --no-sync ruff check --fix .
 
-check: lint test config-validate ## Линтер + тесты + проверка конфигурации
+check: lint test config-validate ## Линтер + тесты + конфигурация
 
-clean: ## Удалить артефакты сборки и кэши установщика setup-work
+clean: ## Удалить кэши сборки и установщика (модели и харнессы не трогает)
 	@rm -rf .pytest_cache .ruff_cache build dist
 	@find . -name __pycache__ -type d -prune -exec rm -rf {} +
 	@if [ -f "$(VENV_STAMP)" ]; then $(CLI) clean; fi

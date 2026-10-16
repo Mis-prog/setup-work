@@ -1,12 +1,8 @@
-"""Corporate environment integration.
+"""Corporate environment: `corporate.yaml` env and a read-only status for `doctor`.
 
-* ``apply_environment`` exports ``corporate.env`` (non-secret settings such as
-  ``UV_PYTHON_DOWNLOADS`` or ``NPM_CONFIG_REGISTRY``) for every subprocess,
-  without overriding variables the user already set.
-* uv ignores ``pip.conf``. When corporate scripts configure pip (index-url,
-  extra-index-url, trusted-host, cert), ``pip_conf_bridge`` maps them to the
-  equivalent ``UV_*`` variables so uv-based installs use the same mirrors.
-* ``plan_scripts`` turns ``corporate.scripts`` into confirmed, idempotent steps.
+pip, npm and uv are configured by `make registries` (scripts/bootstrap.sh), which
+writes pip.conf, .npmrc and uv.toml. Each tool then reads its own file, so nothing
+has to be bridged here.
 """
 
 from __future__ import annotations
@@ -14,110 +10,69 @@ from __future__ import annotations
 import configparser
 import os
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
-from .config import Config, expand_path
+from .config import Config
 from .runner import probe, which
-from .steps import Step
 
 
-def pip_conf_files() -> list[Path]:
-    env = os.environ.get("PIP_CONFIG_FILE")
-    xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    cands = [
+def _config_home() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+
+
+def pip_index() -> str | None:
+    """index-url from pip.conf (later files win, PIP_INDEX_URL wins over all)."""
+    if os.environ.get("PIP_INDEX_URL"):
+        return os.environ["PIP_INDEX_URL"]
+    files = [
         Path("/etc/pip.conf"),
-        Path("/etc/xdg/pip/pip.conf"),
         Path.home() / ".pip" / "pip.conf",
-        Path(xdg) / "pip" / "pip.conf",
-        Path.home() / "Library" / "Application Support" / "pip" / "pip.conf",
+        _config_home() / "pip" / "pip.conf",
     ]
-    if env:
-        cands.append(Path(env))
-    return [p for p in cands if p.is_file()]
-
-
-def read_pip_settings() -> dict[str, str]:
-    """Later files win (pip's own precedence: global < user < PIP_CONFIG_FILE)."""
-    out: dict[str, str] = {}
-    for f in pip_conf_files():
+    if os.environ.get("PIP_CONFIG_FILE"):
+        files.append(Path(os.environ["PIP_CONFIG_FILE"]))
+    found = None
+    for f in files:
         cp = configparser.RawConfigParser()
         try:
             cp.read(f, encoding="utf-8")
         except (configparser.Error, OSError):
             continue
-        for section in ("global", "install"):
-            if cp.has_section(section):
-                for key in ("index-url", "extra-index-url", "trusted-host", "cert"):
-                    if cp.has_option(section, key):
-                        out[key] = cp.get(section, key).strip()
-    for env_key, key in (
-        ("PIP_INDEX_URL", "index-url"),
-        ("PIP_EXTRA_INDEX_URL", "extra-index-url"),
-        ("PIP_TRUSTED_HOST", "trusted-host"),
-        ("PIP_CERT", "cert"),
-    ):
-        if os.environ.get(env_key):
-            out[key] = os.environ[env_key]
-    return out
+        if cp.has_option("global", "index-url"):
+            found = cp.get("global", "index-url").strip()
+    return found
 
 
-def pip_conf_bridge(settings: dict[str, str] | None = None) -> dict[str, str]:
-    """UV_* variables equivalent to the pip settings, excluding ones already set."""
-    s = read_pip_settings() if settings is None else settings
-    env: dict[str, str] = {}
-    has_index = any(os.environ.get(k) for k in ("UV_DEFAULT_INDEX", "UV_INDEX_URL"))
-    if s.get("index-url") and not has_index:
-        env["UV_DEFAULT_INDEX"] = s["index-url"]
-    if s.get("extra-index-url") and not os.environ.get("UV_INDEX"):
-        env["UV_INDEX"] = " ".join(s["extra-index-url"].split())
-    if s.get("trusted-host") and not os.environ.get("UV_INSECURE_HOST"):
-        env["UV_INSECURE_HOST"] = " ".join(s["trusted-host"].split())
-    if s.get("cert") and not os.environ.get("SSL_CERT_FILE"):
-        env["SSL_CERT_FILE"] = str(Path(s["cert"]).expanduser())
-    return env
-
-
-def apply_environment(cfg: Config) -> dict[str, str]:
-    """Export corporate settings into os.environ (user-set values win). Returns what was set."""
-    applied: dict[str, str] = {}
+def uv_index() -> str | None:
+    """Default index from uv's user config (uv.toml) or UV_DEFAULT_INDEX."""
+    if os.environ.get("UV_DEFAULT_INDEX"):
+        return os.environ["UV_DEFAULT_INDEX"]
+    f = Path(os.environ.get("UV_CONFIG_FILE") or _config_home() / "uv" / "uv.toml")
     try:
-        corp = cfg.corporate
+        data = tomllib.loads(f.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    for idx in data.get("index", []):
+        if idx.get("default"):
+            return idx.get("url")
+    return data.get("index-url")
+
+
+def apply_environment(cfg: Config) -> None:
+    """Export `corporate.yaml` env for every subprocess (variables you set win)."""
+    os.environ.setdefault("UV_PYTHON_DOWNLOADS", "never")  # there is no Python mirror
+    try:
+        env = cfg.corporate.env
     except Exception:  # invalid corporate.yaml is reported by `config validate`
-        return applied
-    for k, v in corp.env.items():
-        if k not in os.environ:
-            os.environ[k] = os.path.expandvars(os.path.expanduser(v))
-            applied[k] = os.environ[k]
-    if corp.bridge_pip_conf:
-        for k, v in pip_conf_bridge().items():
-            os.environ[k] = v
-            applied[k] = v
-    return applied
+        return
+    for k, v in env.items():
+        os.environ.setdefault(k, os.path.expandvars(os.path.expanduser(v)))
 
 
 def mask(value: str) -> str:
     return re.sub(r"//[^/@\s]+@", "//***@", value)
-
-
-def plan_scripts(cfg: Config, only: list[str] | None = None) -> list[Step]:
-    steps: list[Step] = []
-    for sc in cfg.corporate.scripts:
-        if only and sc.name not in only:
-            continue
-        creates = [expand_path(c) for c in sc.creates]
-        argv = [os.path.expanduser(a) for a in sc.argv]
-        steps.append(
-            Step(
-                "command",
-                f"corporate setup: {sc.name}" + (f" — {sc.description}" if sc.description else ""),
-                argv=argv,
-                confirm=True,
-                timeout=1800,
-                when=(lambda c=creates: not all(p.exists() for p in c)) if creates else None,
-            )
-        )
-    return steps
 
 
 def status(cfg: Config) -> dict[str, Any]:
@@ -131,17 +86,9 @@ def status(cfg: Config) -> dict[str, Any]:
     if corp.models or corp.engines or corp.tools or hdfs:
         ok, why = kerberos_ok(corp.hdfs)
         info["kerberos"] = {"ok": ok, "detail": why}
-    info["scripts"] = [
-        {
-            "name": s.name,
-            "done": bool(s.creates) and all(expand_path(c).exists() for c in s.creates),
-        }
-        for s in corp.scripts
-    ]
-    pip = read_pip_settings()
-    info["pip_index"] = mask(pip["index-url"]) if pip.get("index-url") else None
-    uv_index = os.environ.get("UV_DEFAULT_INDEX") or os.environ.get("UV_INDEX_URL")
-    info["uv_index"] = mask(uv_index) if uv_index else None
+    pip, uv = pip_index(), uv_index()
+    info["pip_index"] = mask(pip) if pip else None
+    info["uv_index"] = mask(uv) if uv else None
     npm = which("npm")
     if npm:
         res = probe([npm, "config", "get", "registry"], timeout=15)

@@ -1,4 +1,4 @@
-"""Software environment detection: tools, versions, package managers, privileges."""
+"""Software environment detection: tools and versions."""
 
 from __future__ import annotations
 
@@ -62,16 +62,10 @@ class ToolStatus:
 TOOL_PROBES: dict[str, tuple[str, list[str], str | None]] = {
     "python": ("python3", ["python3", "--version"], ">=3.11"),
     "uv": ("uv", ["uv", "--version"], None),
-    "pip": ("python3", ["python3", "-m", "pip", "--version"], None),
     "node": ("node", ["node", "--version"], ">=22"),
     "npm": ("npm", ["npm", "--version"], None),
     "git": ("git", ["git", "--version"], None),
-    "git-lfs": ("git-lfs", ["git-lfs", "--version"], None),
-    "curl": ("curl", ["curl", "--version"], None),
-    "wget": ("wget", ["wget", "--version"], None),
     "make": ("make", ["make", "--version"], None),
-    "cc": ("cc", ["cc", "--version"], None),
-    "cmake": ("cmake", ["cmake", "--version"], None),
 }
 
 
@@ -129,9 +123,6 @@ def _is_managed(path: Path, cfg: Config) -> bool:
 class Environment:
     python_runtime: str
     tools: list[ToolStatus]
-    package_managers: list[str]
-    is_root: bool
-    sudo_present: bool
     bin_dir_on_path: bool
     bin_dir: str
     proxies: dict[str, str] = field(default_factory=dict)
@@ -146,13 +137,9 @@ class Environment:
         return d
 
 
-PACKAGE_MANAGERS = ["brew", "apt-get", "dnf", "yum", "pacman", "zypper", "apk", "conda", "mamba"]
-
-
 def detect_environment(cfg: Config, tools: list[str] | None = None) -> Environment:
     names = tools or list(TOOL_PROBES)
     statuses = [detect_tool(n, cfg) for n in names]
-    pms = [pm for pm in PACKAGE_MANAGERS if which(pm)]
     path_dirs = [Path(p).expanduser() for p in os.environ.get("PATH", "").split(os.pathsep) if p]
     on_path = any(_same(p, cfg.bin_dir) for p in path_dirs)
     proxies = {
@@ -163,9 +150,6 @@ def detect_environment(cfg: Config, tools: list[str] | None = None) -> Environme
     return Environment(
         python_runtime=sys.version.split()[0],
         tools=statuses,
-        package_managers=pms,
-        is_root=hasattr(os, "geteuid") and os.geteuid() == 0,
-        sudo_present=which("sudo") is not None,
         bin_dir_on_path=on_path,
         bin_dir=str(cfg.bin_dir),
         proxies=proxies,

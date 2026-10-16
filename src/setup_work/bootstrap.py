@@ -1,19 +1,11 @@
 """Tool and engine installers (plan first, then execute).
 
-Policy
-------
-* Corporate sources only: uv, Node.js and Git LFS archives and the llama.cpp / vLLM
-  builds come from ``corporate.yaml`` (``tools`` / ``engines``; HDFS, NFS or internal
-  HTTPS). Tool archives are checked against the sha256 pinned in ``defaults.yaml``.
-  Nothing is fetched from public hosts; a missing mapping is an error with a hint.
-* User-space first: everything is unpacked into ``data_dir`` and linked into
-  ``bin_dir`` (default ``~/.local/bin``). No remote install scripts are run.
-* System packages (git, curl, wget, compilers) are only installed through a
-  package manager. With Homebrew this needs confirmation; with apt/dnf/... it needs
-  root or ``--allow-sudo`` *and* confirmation. Otherwise setup-work prints the exact
-  command for an administrator.
-* Already-satisfied tools are skipped (idempotent). Shell startup files are never
-  edited; if ``bin_dir`` is not on PATH we print the line to add.
+* uv and Node.js archives come from corporate.yaml `tools`, llama.cpp / vLLM builds
+  from `engines` (HDFS, NFS or internal HTTPS). Tool archives are checked against the
+  sha256 pinned in defaults.yaml. Nothing is fetched from public hosts.
+* Python is never downloaded (there is no mirror): it must be installed on the machine.
+* Everything is unpacked into ``data_dir`` and linked into ``bin_dir``
+  (default ``~/.local/bin``). No system packages, no sudo, no shell-profile edits.
 """
 
 from __future__ import annotations
@@ -29,72 +21,7 @@ from .hardware import HardwareInfo
 from .runner import Runner, probe, which
 from .steps import Step
 
-BOOTSTRAP_TOOLS = [
-    "uv",
-    "python",
-    "pip",
-    "node",
-    "npm",
-    "git",
-    "git-lfs",
-    "curl",
-    "wget",
-    "build-tools",
-]
-GROUPS = {
-    "python": ["uv", "python"],
-    "node": ["node", "npm"],
-    "tools": ["git", "git-lfs", "curl", "wget", "build-tools"],
-    "all": BOOTSTRAP_TOOLS,
-}
-
-SYSTEM_PACKAGES: dict[str, dict[str, list[str]]] = {
-    "git": {
-        "brew": ["git"],
-        "apt-get": ["git"],
-        "dnf": ["git"],
-        "yum": ["git"],
-        "pacman": ["git"],
-        "zypper": ["git"],
-        "apk": ["git"],
-    },
-    "curl": {
-        "brew": ["curl"],
-        "apt-get": ["curl", "ca-certificates"],
-        "dnf": ["curl"],
-        "yum": ["curl"],
-        "pacman": ["curl"],
-        "zypper": ["curl"],
-        "apk": ["curl"],
-    },
-    "wget": {
-        "brew": ["wget"],
-        "apt-get": ["wget"],
-        "dnf": ["wget"],
-        "yum": ["wget"],
-        "pacman": ["wget"],
-        "zypper": ["wget"],
-        "apk": ["wget"],
-    },
-    "build-tools": {
-        "apt-get": ["build-essential", "cmake", "pkg-config"],
-        "dnf": ["gcc", "gcc-c++", "make", "cmake"],
-        "yum": ["gcc", "gcc-c++", "make", "cmake"],
-        "pacman": ["base-devel", "cmake"],
-        "zypper": ["gcc", "gcc-c++", "make", "cmake"],
-        "apk": ["build-base", "cmake"],
-        "brew": ["cmake"],
-    },
-}
-_INSTALL_ARGV = {
-    "brew": ["brew", "install"],
-    "apt-get": ["apt-get", "install", "-y", "--no-install-recommends"],
-    "dnf": ["dnf", "install", "-y"],
-    "yum": ["yum", "install", "-y"],
-    "pacman": ["pacman", "-S", "--needed", "--noconfirm"],
-    "zypper": ["zypper", "--non-interactive", "install"],
-    "apk": ["apk", "add"],
-}
+BOOTSTRAP_TOOLS = ["uv", "python", "node"]
 
 
 @dataclass
@@ -140,15 +67,6 @@ def node_target() -> tuple[str, str]:
     if not a or not s:
         raise UnsupportedError(f"no pinned Node.js build for {system}/{arch}")
     return f"{s}-{a}", "tar.gz" if s == "darwin" else "tar.xz"
-
-
-def git_lfs_target() -> tuple[str, str]:
-    system, arch = _platform()
-    a = {"arm64": "arm64", "x86_64": "amd64"}.get(arch)
-    s = {"Darwin": "darwin", "Linux": "linux"}.get(system)
-    if not a or not s:
-        raise UnsupportedError(f"no pinned git-lfs build for {system}/{arch}")
-    return f"{s}-{a}", "zip" if s == "darwin" else "tar.gz"
 
 
 def _archive_steps(
@@ -213,28 +131,6 @@ def plan_node(cfg: Config) -> list[Step]:
     )
 
 
-def plan_git_lfs(cfg: Config) -> list[Step]:
-    pin = cfg.defaults.tools["git-lfs"]
-    target, ext = git_lfs_target()
-    steps = _archive_steps(
-        cfg,
-        "git-lfs",
-        pin.sha256.get(target),
-        f"git-lfs-{target}-v{pin.version}.{ext}",
-        {"git-lfs": f"git-lfs-{pin.version}/git-lfs"},
-        target,
-    )
-    steps.append(
-        Step(
-            "manual",
-            "enable Git LFS hooks for your user (edits ~/.gitconfig, so not done automatically)",
-            argv=["git", "lfs", "install", "--skip-repo"],
-        )
-    )
-    steps[-1].description += ": git lfs install --skip-repo"
-    return steps
-
-
 def plan_python(cfg: Config) -> list[Step]:
     """Python is never downloaded (no corporate mirror): it must come with the machine."""
     version = cfg.defaults.tools.get("python")
@@ -248,117 +144,17 @@ def plan_python(cfg: Config) -> list[Step]:
     ]
 
 
-def system_package_plan(env: Environment, tool: str, allow_sudo: bool) -> ToolPlan:
-    pkgs_by_pm = SYSTEM_PACKAGES[tool]
-    system, _ = _platform()
-    if system == "Darwin" and tool == "build-tools":
-        has_clt = probe(["xcode-select", "-p"]).ok
-        if not has_clt:
-            return ToolPlan(
-                tool,
-                "manual",
-                [Step("manual", "install the Xcode Command Line Tools: xcode-select --install")],
-                "Apple compilers come from the Command Line Tools (GUI installer)",
-            )
-    for pm in env.package_managers:
-        if pm not in pkgs_by_pm or pm not in _INSTALL_ARGV:
-            continue
-        argv = _INSTALL_ARGV[pm] + pkgs_by_pm[pm]
-        if pm == "brew":
-            return ToolPlan(
-                tool,
-                "install",
-                [Step("command", f"install {tool} with Homebrew", argv=argv, confirm=True)],
-            )
-        if env.is_root:
-            pre = (
-                [
-                    Step(
-                        "command",
-                        "refresh package index",
-                        argv=["apt-get", "update"],
-                        privileged=True,
-                    )
-                ]
-                if pm == "apt-get"
-                else []
-            )
-            return ToolPlan(
-                tool,
-                "install",
-                [*pre, Step("command", f"install {tool} with {pm}", argv=argv, privileged=True)],
-            )
-        sudo_cmd = ["sudo", *argv]
-        if env.sudo_present and allow_sudo:
-            pre = (
-                [
-                    Step(
-                        "command",
-                        "refresh package index",
-                        argv=["sudo", "apt-get", "update"],
-                        privileged=True,
-                    )
-                ]
-                if pm == "apt-get"
-                else []
-            )
-            return ToolPlan(
-                tool,
-                "install",
-                [
-                    *pre,
-                    Step(
-                        "command", f"install {tool} with sudo {pm}", argv=sudo_cmd, privileged=True
-                    ),
-                ],
-            )
-        hint = " ".join(sudo_cmd)
-        detail = (
-            "requires administrator rights; re-run with --allow-sudo (ALLOW_SUDO=1) or ask an admin"
-            if env.sudo_present
-            else "no sudo available: ask an administrator, or use a user-space package manager "
-            "(e.g. micromamba/conda-forge)"
-        )
-        return ToolPlan(tool, "manual", [Step("manual", f"{tool}: {hint}")], detail)
-    return ToolPlan(
-        tool,
-        "manual",
-        [Step("manual", f"install {tool} with your system package manager")],
-        "no supported package manager found",
-    )
-
-
-def plan_tools(
-    cfg: Config, tools: list[str], *, allow_sudo: bool = False, force: bool = False
-) -> list[ToolPlan]:
+def plan_tools(cfg: Config, tools: list[str], *, force: bool = False) -> list[ToolPlan]:
     for t in tools:
         if t not in BOOTSTRAP_TOOLS:
             raise UsageError(
                 f"unknown tool {t!r}", hint=f"known tools: {', '.join(BOOTSTRAP_TOOLS)}"
             )
-    env = detect_environment(
-        cfg,
-        [
-            n
-            for n in (
-                "python",
-                "uv",
-                "pip",
-                "node",
-                "npm",
-                "git",
-                "git-lfs",
-                "curl",
-                "wget",
-                "make",
-                "cc",
-            )
-        ],
-    )
+    env = detect_environment(cfg, ["python", "uv", "node", "npm"])
     plans: list[ToolPlan] = []
     for t in tools:
         try:
-            plans.append(_plan_one(cfg, env, t, allow_sudo, force))
+            plans.append(_plan_one(cfg, env, t, force))
         except NotFoundError as e:
             plans.append(ToolPlan(t, "manual", [Step("manual", e.hint or e.message)], e.message))
         except UnsupportedError as e:
@@ -366,12 +162,7 @@ def plan_tools(
     return plans
 
 
-def _plan_one(cfg: Config, env: Environment, t: str, allow_sudo: bool, force: bool) -> ToolPlan:
-    if t == "build-tools":
-        cc, mk = env.tool("cc"), env.tool("make")
-        if cc and cc.installed and mk and mk.installed and not force:
-            return ToolPlan(t, "satisfied", detail=f"cc {cc.version}, make {mk.version}")
-        return system_package_plan(env, t, allow_sudo)
+def _plan_one(cfg: Config, env: Environment, t: str, force: bool) -> ToolPlan:
     st = env.tool(t) or detect_tool(t, cfg)
     if t == "uv":
         if st.installed and not force:
@@ -381,46 +172,16 @@ def _plan_one(cfg: Config, env: Environment, t: str, allow_sudo: bool, force: bo
         if st.installed and st.satisfies and not force:
             return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
         return ToolPlan(t, "manual", plan_python(cfg), "Python must be preinstalled")
-    if t == "pip":
-        if st.installed:
-            return ToolPlan(t, "satisfied", detail=f"{st.version}")
-        return ToolPlan(
-            t,
-            "manual",
-            [
-                Step(
-                    "manual",
-                    "pip is optional with uv (use `uv pip`); for a plain interpreter run "
-                    "`python3 -m ensurepip --user`",
-                )
-            ],
-            "uv replaces pip for setup-work",
-        )
-    if t in ("node", "npm"):
+    if t == "node":
         node = env.tool("node")
         if node and node.installed and node.satisfies and not force:
-            if t == "npm":
-                npm = env.tool("npm")
-                if npm and npm.installed:
-                    return ToolPlan(t, "satisfied", detail=f"{npm.version}")
-            else:
-                return ToolPlan(t, "satisfied", detail=f"{node.version} at {node.path}")
-        if t == "npm":
-            return ToolPlan(t, "satisfied", detail="installed together with node")
+            return ToolPlan(t, "satisfied", detail=f"{node.version} at {node.path}")
         why = (
             f"found {node.version}, need >= {cfg.defaults.tools['node'].min_version}"
             if node and node.installed
             else "not installed"
         )
         return ToolPlan(t, "install", plan_node(cfg), f"{why}; corporate archive, sha256-verified")
-    if t == "git-lfs":
-        if st.installed and not force:
-            return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
-        return ToolPlan(t, "install", plan_git_lfs(cfg), "corporate archive, sha256-verified")
-    if t in ("git", "curl", "wget"):
-        if st.installed and not force:
-            return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
-        return system_package_plan(env, t, allow_sudo)
     raise UsageError(f"unknown tool {t}")
 
 

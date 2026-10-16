@@ -263,14 +263,3 @@ def test_model_validation_rules():
                 }
             )
         )
-
-
-def test_profile_reference_errors(tmp_path):
-    user = tmp_path / "userconf"
-    user.mkdir(exist_ok=True)
-    (user / "profiles.yaml").write_text(
-        "profiles:\n  broken:\n    extends: [nope]\n    harnesses: {required: [ghost]}\n"
-    )
-    problems = Config().validate_all()
-    assert any("unknown profile 'nope'" in p for p in problems)
-    assert any("unknown harness 'ghost'" in p for p in problems)

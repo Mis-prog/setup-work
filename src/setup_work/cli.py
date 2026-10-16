@@ -25,12 +25,11 @@ from . import harness as hz
 from .config import Config
 from .diagnostics import detect_environment
 from .engines import ENGINES, get_engine
-from .errors import CheckFailedError, ExitCode, NotFoundError, SetupWorkError, UsageError
+from .errors import ExitCode, NotFoundError, SetupWorkError, UsageError
 from .hardware import HardwareInfo, detect
 from .inference import ServeOptions, ServerManager, plan_launch
 from .memory import gib
 from .models import RecommendRequest, recommend, resolve
-from .profiles import resolve_profile
 from .runner import Runner, console, emit_json, err_console
 from .steps import Step, execute
 
@@ -48,17 +47,11 @@ model_app = typer.Typer(help="Download and manage model weights.", no_args_is_he
 harness_app = typer.Typer(help="Install and manage coding-agent harnesses.", no_args_is_help=True)
 server_app = typer.Typer(help="Manage running inference servers.", no_args_is_help=True)
 engine_app = typer.Typer(help="Install inference engines (llama.cpp, vLLM).", no_args_is_help=True)
-profile_app = typer.Typer(help="Inspect development profiles.", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 app.add_typer(model_app, name="model")
 app.add_typer(harness_app, name="harness")
 app.add_typer(server_app, name="server")
 app.add_typer(engine_app, name="engine")
-app.add_typer(profile_app, name="profile")
-corp_app = typer.Typer(
-    help="Corporate sources: setup scripts, HDFS, mirrors.", no_args_is_help=True
-)
-app.add_typer(corp_app, name="corp")
 
 OK = "[green]✔[/]"
 BAD = "[red]✘[/]"
@@ -250,12 +243,14 @@ def _corp_table(c: dict[str, Any]) -> Table:
             "Kerberos",
             f"{OK if k['ok'] else BAD} {k['detail']}" + ("" if k["ok"] else " — run kinit"),
         )
-    for sc in c.get("scripts", []):
-        t.add_row(f"script {sc['name']}", OK + " done" if sc["done"] else f"{WARN} make corp-setup")
-    t.add_row("pip index", c.get("pip_index") or f"{WARN} not configured (make corp-registries)")
-    t.add_row("uv index", c.get("uv_index") or f"{WARN} not configured (make corp-registries)")
+    t.add_row("pip index", c.get("pip_index") or f"{WARN} not configured (make registries)")
+    t.add_row("uv index", c.get("uv_index") or f"{WARN} not configured (make registries)")
     if "npm_registry" in c:
-        t.add_row("npm registry", c.get("npm_registry") or "?")
+        reg = c.get("npm_registry") or ""
+        public = not reg or "registry.npmjs.org" in reg
+        t.add_row(
+            "npm registry", f"{WARN} {reg or 'not configured'} (make registries)" if public else reg
+        )
     a = c.get("artifacts", {})
     t.add_row(
         "artifacts",
@@ -274,7 +269,7 @@ def doctor(
     cfg, hw = STATE.cfg, STATE.hw
     env = detect_environment(cfg)
     problems = cfg.validate_all()
-    core = ["python", "uv", "git", "curl"]
+    core = ["python", "uv", "git"]
     missing_core = [t.name for t in env.tools if t.name in core and not t.installed]
     if _set_json(json_out):
         emit_json(
@@ -299,15 +294,6 @@ def doctor(
         sys_t.add_column(style="bold")
         sys_t.add_column()
         sys_t.add_row("setup-work runs on", f"Python {env.python_runtime}")
-        sys_t.add_row("Package managers", ", ".join(env.package_managers) or "none found")
-        sys_t.add_row(
-            "Privileges",
-            "root"
-            if env.is_root
-            else (
-                "user (sudo present, never used silently)" if env.sudo_present else "user (no sudo)"
-            ),
-        )
         sys_t.add_row(
             "bin dir",
             f"{env.bin_dir} "
@@ -323,8 +309,7 @@ def doctor(
         for t in env.tools:
             if not t.installed:
                 mark = BAD if t.name in core else WARN
-                note = "optional: uv replaces pip" if t.name == "pip" else (t.note or "")
-                tt.add_row(t.name, f"{mark} missing", "", note)
+                tt.add_row(t.name, f"{mark} missing", "", t.note or "")
             else:
                 mark = OK if t.satisfies in (None, True) else WARN
                 ver = (t.version or "") + ("" if t.satisfies in (None, True) else " (too old)")
@@ -339,9 +324,7 @@ def doctor(
         for row in _engine_rows(cfg, hw):
             et.add_row(*row)
         console.print(et)
-        corp = corporate.status(cfg)
-        if corp["configured"] or corp.get("pip_index") or corp.get("hdfs_cli"):
-            console.print(Panel(_corp_table(corp), title="Corporate", expand=False))
+        console.print(Panel(_corp_table(corporate.status(cfg)), title="Corporate", expand=False))
         if problems:
             console.print("[red]Configuration problems:[/]")
             for p in problems:
@@ -392,13 +375,7 @@ def config_validate(json_out: bool = _json_opt()) -> None:
             "models": len(cfg.models.models),
             "variants": sum(len(m.variants) for m in cfg.models.models.values()),
             "harnesses": len(cfg.harnesses.harnesses),
-            "profiles": len(cfg.profiles.profiles),
         }
-        for p in cfg.profiles.profiles:
-            try:
-                resolve_profile(cfg, p)
-            except SetupWorkError as e:
-                problems.append(e.message)
     if _set_json(json_out):
         emit_json({"ok": not problems, "problems": problems, "counts": summary})
     elif problems:
@@ -428,35 +405,14 @@ def _print_tool_plans(plans: list[bs.ToolPlan]) -> None:
 
 @app.command("bootstrap")
 def bootstrap_cmd(
-    group: str = typer.Argument(
-        "all", help="all | python | node | tools", envvar="SETUP_WORK_GROUP"
-    ),
-    tool: list[str] = typer.Option(None, "--tool", help="Specific tool(s) instead of a group."),
-    allow_sudo: bool = typer.Option(
-        False,
-        "--allow-sudo",
-        envvar="SETUP_WORK_ALLOW_SUDO",
-        help="Permit sudo package-manager commands (still confirmed).",
-    ),
+    tool: list[str] = typer.Option(None, "--tool", help="uv, python and/or node (default: all)."),
     force: bool = typer.Option(False, "--force", help="Reinstall even if already satisfied."),
     json_out: bool = _json_opt(),
 ) -> None:
-    """Install missing developer tooling, user-space first. Idempotent."""
+    """Install missing uv / Node.js from corporate archives; check Python. Idempotent."""
     cfg = STATE.cfg
     _set_json(json_out)
-    if tool:
-        tools = list(tool)
-    elif group in bs.GROUPS:
-        tools = bs.GROUPS[group]
-    else:
-        raise UsageError(f"unknown group {group!r}", hint="all, python, node or tools")
-    if group == "all" and not tool:
-        corp_steps = corporate.plan_scripts(cfg)
-        if corp_steps:
-            STATE.runner.info("[bold]Corporate setup scripts[/]")
-            execute(corp_steps, STATE.runner, cfg.data_dir)
-            corporate.apply_environment(cfg)
-    plans = bs.plan_tools(cfg, tools, allow_sudo=allow_sudo, force=force)
+    plans = bs.plan_tools(cfg, list(tool) if tool else bs.BOOTSTRAP_TOOLS, force=force)
     _run_tool_plans(cfg, plans)
 
 
@@ -972,23 +928,11 @@ def serve_cmd(
     force: bool = _SERVE_OPTS["force"],
     detach: bool = _SERVE_OPTS["detach"],
     plan_only: bool = _SERVE_OPTS["plan_only"],
-    profile: str = typer.Option(
-        None,
-        "--profile",
-        envvar="SETUP_WORK_PROFILE",
-        help="Take engine/host/port defaults from a profile.",
-    ),
     extra: list[str] = typer.Argument(None, help="Extra engine args after `--`."),
     json_out: bool = _json_opt(),
 ) -> None:
     """Start an OpenAI-compatible inference server (localhost by default)."""
     _set_json(json_out)
-    if profile:
-        inf = resolve_profile(STATE.cfg, profile).inference
-        engine = engine or inf.get("engine")
-        host = host or inf.get("host")
-        port = port or inf.get("port")
-        gpu_util = gpu_util or inf.get("gpu_memory_utilization")
     opts = _serve_options(
         engine=engine,
         name=name,
@@ -1158,207 +1102,6 @@ def serve_test(
         console.print(f"  reply: {escape(str(res['reply'])[:200])!r}")
     if res.get("dimensions"):
         console.print(f"  embedding dimensions: {res['dimensions']}")
-
-
-# ===================================================================== corporate
-
-
-@corp_app.command("setup")
-def corp_setup(
-    script: list[str] = typer.Option(None, "--script", help="Only run these script names."),
-) -> None:
-    """Run corporate setup scripts (pip.conf, .npmrc, ...). Each is shown and confirmed."""
-    cfg = STATE.cfg
-    steps = corporate.plan_scripts(cfg, script or None)
-    if not steps:
-        console.print("no corporate scripts configured (corporate.yaml: scripts)")
-        return
-    execute(steps, STATE.runner, cfg.data_dir)
-    # Re-read pip.conf written by the scripts so later uv calls in this run see it.
-    applied = corporate.apply_environment(cfg)
-    for k, v in applied.items():
-        STATE.runner.info(f"  {k}={corporate.mask(v)}")
-
-
-@corp_app.command("status")
-def corp_status(json_out: bool = _json_opt()) -> None:
-    """Show HDFS/Kerberos, mirror and artifact configuration."""
-    data = corporate.status(STATE.cfg)
-    if _set_json(json_out):
-        emit_json(data)
-        return
-    console.print(Panel(_corp_table(data), title="Corporate", expand=False))
-
-
-@corp_app.command("env")
-def corp_env() -> None:
-    """Print `export` lines for the corporate environment (for your shell or CI)."""
-    import shlex
-
-    cfg = STATE.cfg
-    env = {k: os.path.expandvars(os.path.expanduser(v)) for k, v in cfg.corporate.env.items()}
-    if cfg.corporate.bridge_pip_conf:
-        env.update(corporate.pip_conf_bridge(corporate.read_pip_settings()))
-    for k, v in env.items():
-        print(f"export {k}={shlex.quote(v)}")
-
-
-# ====================================================================== profiles
-
-
-@profile_app.command("list")
-def profile_list(json_out: bool = _json_opt()) -> None:
-    """List available profiles."""
-    profs = STATE.cfg.profiles.profiles
-    if _set_json(json_out):
-        emit_json({k: v.model_dump() for k, v in profs.items()})
-        return
-    for k, v in profs.items():
-        ext = f" [dim](extends {', '.join(v.extends)})[/]" if v.extends else ""
-        console.print(f"[bold]{k}[/]{ext}: {v.description}")
-
-
-@profile_app.command("show")
-def profile_show(
-    name: str = typer.Argument(..., envvar="SETUP_WORK_PROFILE"), json_out: bool = _json_opt()
-) -> None:
-    """Show a fully resolved profile."""
-    rp = resolve_profile(STATE.cfg, name)
-    if _set_json(json_out):
-        emit_json(rp.to_dict())
-        return
-    import yaml
-
-    console.print(yaml.safe_dump(rp.to_dict(), sort_keys=False), markup=False)
-
-
-def _validate_profile(cfg: Config, rp: Any) -> list[tuple[str, bool, str]]:
-    out: list[tuple[str, bool, str]] = []
-    env = None
-    for v in rp.validation:
-        if v == "tools":
-            env = env or detect_environment(cfg)
-            for t in rp.tools_required:
-                if t in ("build-tools",):
-                    continue
-                st = env.tool(t)
-                out.append((f"tool {t}", bool(st and st.installed), st.version or "" if st else ""))
-        elif v == "harnesses":
-            for h in rp.harnesses_required:
-                out.append((f"harness {h}", hz.read_manifest(cfg, h) is not None, ""))
-        elif v == "engines":
-            for e in rp.engines:
-                if e == "vllm" and (
-                    STATE.hw.os.system != "Linux" or STATE.hw.accelerator != "nvidia"
-                ):
-                    out.append((f"engine {e}", False, "unsupported on this machine"))
-                    continue
-                b = get_engine(e).find_binary(cfg)
-                out.append((f"engine {e}", b is not None, b or "not installed"))
-        elif v.startswith("gpu:"):
-            want = v.split(":", 1)[1]
-            hw = STATE.hw
-            ok = hw.accelerator == want if want != "any" else hw.accelerator in ("nvidia", "apple")
-            out.append((f"gpu {want}", ok, hw.accelerator))
-    return out
-
-
-@app.command("setup")
-def setup_cmd(
-    profile: str = typer.Argument("developer", envvar="SETUP_WORK_PROFILE"),
-    with_optional: bool = typer.Option(
-        False,
-        "--with-optional",
-        envvar="SETUP_WORK_WITH_OPTIONAL",
-        help="Also install optional tools and harnesses.",
-    ),
-    allow_sudo: bool = typer.Option(False, "--allow-sudo", envvar="SETUP_WORK_ALLOW_SUDO"),
-    allow_downloads: bool = typer.Option(
-        False,
-        "--allow-downloads",
-        envvar="SETUP_WORK_ALLOW_DOWNLOADS",
-        help="Fetch the profile's models.pull list from artifacts.",
-    ),
-    json_out: bool = _json_opt(),
-) -> None:
-    """Apply a development profile: tools → engines → harnesses → (models) → validation."""
-    cfg, r = STATE.cfg, STATE.runner
-    rp = resolve_profile(cfg, profile)
-    tools = rp.tools_required + (rp.tools_optional if with_optional else [])
-    harnesses = rp.harnesses_required + (rp.harnesses_optional if with_optional else [])
-    plans = bs.plan_tools(cfg, tools, allow_sudo=allow_sudo)
-    if _set_json(json_out) and r.dry_run:
-        emit_json(
-            {
-                "profile": rp.to_dict(),
-                "tools": [
-                    {"tool": p.tool, "status": p.status, "steps": [s.to_dict() for s in p.steps]}
-                    for p in plans
-                ],
-                "engines": rp.engines,
-                "harnesses": harnesses,
-                "models": rp.model_pull if allow_downloads else [],
-            }
-        )
-        return
-    r.info(f"[bold]Profile {profile}[/] ({' → '.join(rp.chain)}): {rp.description}")
-    r.info("\n[bold]1. Tools[/]")
-    _run_tool_plans(cfg, plans)
-    r.info("\n[bold]2. Engines[/]")
-    for e in rp.engines:
-        if get_engine(e).find_binary(cfg):
-            r.info(f"  {OK} {e} already installed")
-            continue
-        try:
-            steps, notes = bs.plan_engine(cfg, e, STATE.hw)
-        except SetupWorkError as ex:
-            r.warn(f"{e}: {ex.message}")
-            continue
-        for n in notes:
-            r.warn(n)
-        if r.confirm(f"Install engine {e} ({len(steps)} steps)?"):
-            execute(steps, r, cfg.data_dir)
-    if not rp.engines:
-        r.info("  (none)")
-    r.info("\n[bold]3. Harnesses[/]")
-    for h in harnesses:
-        try:
-            plan = hz.plan_install(cfg, h)
-        except SetupWorkError as ex:
-            r.warn(f"{h}: {ex.message}" + (f" ({ex.hint})" if ex.hint else ""))
-            continue
-        _harness_apply(h, plan, "install")
-    if not harnesses:
-        r.info("  (none)")
-    r.info("\n[bold]4. Models[/]")
-    if rp.model_pull and allow_downloads:
-        for ref in rp.model_pull:
-            _, var = resolve(cfg, ref)
-            if var is None:
-                raise UsageError(f"profile model {ref} must name a variant (<id>:<variant>)")
-            mid = ref.split(":")[0]
-            hub.pull_artifact(cfg, mid, var, hub.require_artifact(cfg, mid, var), r)
-    elif rp.model_pull:
-        r.info(
-            f"  skipped {len(rp.model_pull)} model(s): pass --allow-downloads (ALLOW_DOWNLOADS=1)"
-        )
-    else:
-        pref = rp.model_preferences
-        hint = " ".join(f"{k.upper()}={v}" for k, v in pref.items())
-        r.info(f"  no downloads configured. Suggested: make recommend {hint}".rstrip())
-    r.info("\n[bold]5. Validation[/]")
-    if r.dry_run:
-        r.info("  (skipped in dry-run)")
-        return
-    results = _validate_profile(cfg, rp)
-    for c, ok, detail in results:
-        r.info(f"  {OK if ok else BAD} {c} {escape(detail)}")
-    if any(not ok for _, ok, _ in results):
-        raise CheckFailedError(
-            f"profile {profile}: some validation checks failed",
-            hint="see the items marked ✘ above; `make doctor` for details",
-        )
-    r.info(f"\n{OK} profile {profile} is ready")
 
 
 # ========================================================================= clean

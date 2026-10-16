@@ -42,7 +42,7 @@ def get_spec(cfg: Config, name: str) -> HarnessSpec:
         raise NotFoundError(
             f"unknown harness {name!r}",
             hint=f"known: {', '.join(sorted(specs))}; add your own in "
-            f"{cfg.user_dir / 'harnesses.yaml'} (see examples/custom-harness.yaml)",
+            f"{cfg.user_dir / 'harnesses.yaml'} (see examples/corp/harnesses.yaml)",
         )
     return specs[name]
 
@@ -131,16 +131,15 @@ def _check_requirements(cfg: Config, spec: HarnessSpec) -> list[str]:
         node = detect_tool("node", cfg)
         npm = detect_tool("npm", cfg)
         if not node.installed or not npm.installed:
-            problems.append("Node.js/npm not found (run `make bootstrap-node`)")
+            problems.append("Node.js/npm not found (run `make bootstrap`)")
         elif "node" in spec.requires and not version_satisfies(node.version, spec.requires["node"]):
             problems.append(
-                f"needs node {spec.requires['node']}, found {node.version} "
-                "(run `make bootstrap-node`)"
+                f"needs node {spec.requires['node']}, found {node.version} (run `make bootstrap`)"
             )
     if (spec.source == "pypi" or spec.install.method == "uv") and not which("uv", [cfg.bin_dir]):
-        problems.append("uv not found (run `make bootstrap-python`)")
+        problems.append("uv not found (run `make bootstrap`)")
     if spec.source == "git" and not which("git"):
-        problems.append("git not found (run `make bootstrap-tools`)")
+        problems.append("git not found (install git on this machine)")
     for cmd in spec.requires_commands:
         if not which(cmd, [cfg.bin_dir]):
             problems.append(f"required command {cmd!r} not found on PATH")
@@ -169,7 +168,7 @@ def plan_install(
     if "CHANGE-ME" in f"{spec.ref} {spec.repository} {spec.path}":
         raise UsageError(
             f"recipe {name} still contains the CHANGE-ME placeholder",
-            hint="set the real repository/ref in your team harnesses.yaml",
+            hint="set the real repository/ref in ~/.config/setup-work/harnesses.yaml",
         )
     root = harness_root(cfg, name)
     plan = HarnessPlan(name, spec)

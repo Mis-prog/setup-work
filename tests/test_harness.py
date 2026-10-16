@@ -94,12 +94,12 @@ harnesses:
 
 def test_missing_runtime_reported(cfg, monkeypatch):
     monkeypatch.setattr(hz, "detect_tool", lambda name, cfg=None: ToolStatus(name, False))
-    with pytest.raises(MissingDependencyError, match="bootstrap-node"):
+    with pytest.raises(MissingDependencyError, match="make bootstrap"):
         hz.plan_install(cfg, "claude-code")
 
 
 def test_unknown_harness(cfg):
-    with pytest.raises(NotFoundError, match="custom-harness.yaml"):
+    with pytest.raises(NotFoundError, match="examples/corp/harnesses.yaml"):
         hz.plan_install(cfg, "does-not-exist")
 
 

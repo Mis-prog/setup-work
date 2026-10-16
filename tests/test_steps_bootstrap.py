@@ -119,37 +119,8 @@ def test_version_satisfies(found, spec, ok):
     assert version_satisfies(found, spec) is ok
 
 
-def _env(tools, pms=(), root=False, sudo=False):
-    return Environment(
-        python_runtime="3.12",
-        tools=tools,
-        package_managers=list(pms),
-        is_root=root,
-        sudo_present=sudo,
-        bin_dir_on_path=True,
-        bin_dir="/b",
-    )
-
-
-def test_system_package_without_sudo_is_manual():
-    plan = bs.system_package_plan(_env([], pms=["apt-get"], sudo=False), "wget", False)
-    assert plan.status == "manual" and "administrator" in plan.detail
-
-
-def test_system_package_with_sudo_needs_opt_in(monkeypatch):
-    monkeypatch.setattr(bs, "_platform", lambda: ("Linux", "x86_64"))
-    plan = bs.system_package_plan(_env([], pms=["apt-get"], sudo=True), "wget", False)
-    assert plan.status == "manual" and "--allow-sudo" in plan.detail
-    plan = bs.system_package_plan(_env([], pms=["apt-get"], sudo=True), "wget", True)
-    assert plan.status == "install"
-    assert all(s.privileged for s in plan.steps)
-    assert plan.steps[-1].argv[:2] == ["sudo", "apt-get"]
-
-
-def test_root_in_container_uses_package_manager(monkeypatch):
-    monkeypatch.setattr(bs, "_platform", lambda: ("Linux", "x86_64"))
-    plan = bs.system_package_plan(_env([], pms=["apt-get"], root=True), "git", False)
-    assert plan.status == "install" and plan.steps[-1].argv[0] == "apt-get"
+def _env(tools):
+    return Environment(python_runtime="3.12", tools=tools, bin_dir_on_path=True, bin_dir="/b")
 
 
 def _corp_tools(cfg, **uris):
@@ -170,7 +141,7 @@ def test_plan_uv_from_corporate_source(cfg, monkeypatch):
 
 def test_tools_never_fall_back_to_public_hosts(cfg, monkeypatch):
     monkeypatch.setattr(bs, "_platform", lambda: ("Darwin", "arm64"))
-    for plan in (bs.plan_uv, bs.plan_node, bs.plan_git_lfs):
+    for plan in (bs.plan_uv, bs.plan_node):
         with pytest.raises(NotFoundError, match="no corporate source"):
             plan(cfg)
     monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env([]))
@@ -178,22 +149,22 @@ def test_tools_never_fall_back_to_public_hosts(cfg, monkeypatch):
     assert p.status == "manual" and "tools.node.uri" in p.steps[0].description
 
 
-def test_plan_node_and_git_lfs_targets(cfg, monkeypatch):
+def test_plan_node_targets(cfg, monkeypatch):
     monkeypatch.setattr(bs, "_platform", lambda: ("Darwin", "arm64"))
-    _corp_tools(cfg, node="/mirror/{name}", **{"git-lfs": "/mirror/{name}"})
+    _corp_tools(cfg, node="/mirror/{name}")
     assert bs.plan_node(cfg)[0].artifact.uri == "/mirror/node-v24.20.0-darwin-arm64.tar.gz"
-    lfs = bs.plan_git_lfs(cfg)
-    assert lfs[0].artifact.uri == "/mirror/git-lfs-darwin-arm64-v3.8.0.zip"
-    assert lfs[-1].kind == "manual"  # never edits ~/.gitconfig itself
     monkeypatch.setattr(bs, "_platform", lambda: ("Linux", "riscv64"))
     with pytest.raises(UnsupportedError):
         bs.plan_node(cfg)
 
 
 def test_idempotent_when_satisfied(cfg, monkeypatch):
-    tools = [ToolStatus("uv", True, "0.12.0", "/x/uv"), ToolStatus("git", True, "2.4", "/g")]
+    tools = [
+        ToolStatus("uv", True, "0.12.0", "/x/uv"),
+        ToolStatus("node", True, "24.1.0", "/n", satisfies=True),
+    ]
     monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env(tools))
-    plans = bs.plan_tools(cfg, ["uv", "git"])
+    plans = bs.plan_tools(cfg, ["uv", "node"])
     assert all(p.status == "satisfied" and not p.steps for p in plans)
 
 
