@@ -115,7 +115,10 @@ make harness-doctor NAME=qwen-code
 | `does not exist on HDFS` | проверьте путь: `hdfs dfs -ls <uri>` |
 | `not enough disk space` | нужно ~2× размера архива; задайте `SETUP_WORK_MODEL_DIR` или `XDG_DATA_HOME` на большой том |
 | `the vLLM venv was built with Python 3.X … not available` | поставьте Python 3.X на машину (системный пакет, админы) или пересоберите venv на той версии, что есть на машинах |
+| `no corporate PyPI configured` | задайте `SETUP_WORK_PYPI_INDEX` в `bootstrap.env`, `index-url` в pip.conf или `export UV_DEFAULT_INDEX=…`; публичный pypi.org не используется |
+| `Failed to fetch https://files.pythonhosted.org/…`, `dns error` | uv не увидел корпоративный индекс (версия до 3.0.1: `make` не читал pip.conf). Обновитесь или временно `export UV_DEFAULT_INDEX="$(pip config get global.index-url)"` |
 | `uv sync failed` | индекс: `make corp-env`, `UV_DEFAULT_INDEX`, pip.conf; прокси |
+| `uv.lock` изменён после `make` | так и должно быть: lock пересобирается под корпоративный индекс. Перед `git pull` — `git checkout uv.lock` |
 | `cannot read … auth file` | проверьте путь к файлу с токеном в `bootstrap.env` (`SETUP_WORK_PYPI_AUTH_FILE`, `SETUP_WORK_NPM_AUTH_FILE`) |
 | сменился токен | `make corp-registries` перезапишет `pip.conf` и `.npmrc` |
 | харнес: `still contains the CHANGE-ME placeholder` | заполните `repository`/`ref` в командном `harnesses.yaml` |

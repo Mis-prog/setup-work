@@ -16,7 +16,9 @@
 # Never uses sudo, never pipes remote scripts into a shell, never edits shell
 # startup files. Honours HTTP(S)_PROXY / NO_PROXY through curl/wget.
 #
-# Usage: sh scripts/bootstrap.sh [--dry-run] [--registries-only]
+# Usage: sh scripts/bootstrap.sh [--dry-run] [--registries-only] [--sync-only]
+#        --sync-only: only (re)create the project venv with the corporate index
+#        (used by make when uv.lock / pyproject.toml change)
 #        SETUP_WORK_DRY_RUN=1 sh scripts/bootstrap.sh
 
 set -eu
@@ -63,11 +65,13 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/setup-work"
 DRY_RUN="${SETUP_WORK_DRY_RUN:-}"
 ASSUME_YES="${SETUP_WORK_YES:-}"
 REGISTRIES_ONLY=
+SYNC_ONLY=
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
         --registries-only) REGISTRIES_ONLY=1 ;;
-        *) die "unknown argument: $arg (expected --dry-run, --registries-only)" 2 ;;
+        --sync-only) SYNC_ONLY=1 ;;
+        *) die "unknown argument: $arg (expected --dry-run, --registries-only, --sync-only)" 2 ;;
     esac
 done
 case "$DRY_RUN" in 1|true|yes) DRY_RUN=1 ;; *) DRY_RUN= ;; esac
@@ -91,7 +95,7 @@ confirm() {
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
 # ---- 0b. corporate pre-scripts (e.g. the scripts that write pip.conf/.npmrc) ---
-if [ -n "${SETUP_WORK_PRE_SCRIPTS:-}" ]; then
+if [ -z "$SYNC_ONLY" ] && [ -n "${SETUP_WORK_PRE_SCRIPTS:-}" ]; then
     old_ifs=$IFS; IFS=:
     for script in $SETUP_WORK_PRE_SCRIPTS; do
         IFS=$old_ifs
@@ -212,8 +216,10 @@ setup_npm() {
       } > "$tmp" ) && mv "$tmp" "$rc" || die "failed to write $rc" 1
 }
 
-setup_pypi
-setup_npm
+if [ -z "$SYNC_ONLY" ]; then
+    setup_pypi
+    setup_npm
+fi
 if [ -n "$REGISTRIES_ONLY" ]; then
     say "registries configured"
     exit 0
@@ -343,6 +349,8 @@ install_uv_pip() {
 
 if UV=$(find_uv); then
     say "uv: $UV ($("$UV" --version 2>/dev/null || say unknown))"
+elif [ -n "$SYNC_ONLY" ]; then
+    die "uv not found. Run: make bootstrap   (or sh scripts/bootstrap.sh)" 3
 else
     say "uv not found: installing uv $UV_VERSION into $BIN_DIR"
     use_pip=
@@ -364,22 +372,20 @@ else
 fi
 
 # ---- 2. project environment -----------------------------------------------------
-# uv.lock records pypi.org URLs. With a corporate index, re-resolve against it
-# (locked versions are kept as preferences) instead of using the recorded URLs.
+# uv.lock records pypi.org URLs, which are not reachable here. uv therefore always
+# re-resolves against the corporate index (locked versions are kept as preferences);
+# without a configured index it would go to pypi.org, so stop instead.
 # There is no Python mirror: uv must use an interpreter already on the machine.
 UV_PYTHON_DOWNLOADS="${UV_PYTHON_DOWNLOADS:-never}"
 export UV_PYTHON_DOWNLOADS
-SYNC_FLAGS="--frozen"
-if [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ]; then
-    SYNC_FLAGS=""
-    say "custom package index detected: uv.lock will be re-resolved against it"
+if [ -z "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}" ]; then
+    die "no corporate PyPI configured: set SETUP_WORK_PYPI_INDEX in bootstrap.env (SETUP_WORK_TEAM_CONFIG_DIR), index-url in pip.conf, or export UV_DEFAULT_INDEX" 2
 fi
-say "creating project environment (uv sync $SYNC_FLAGS)"
+say "creating project environment (uv sync, uv.lock re-resolved against the corporate index)"
 if [ -n "$DRY_RUN" ]; then
-    say "  \$ $UV sync $SYNC_FLAGS   (in $ROOT)"
+    say "  \$ $UV sync   (in $ROOT)"
 else
-    # shellcheck disable=SC2086
-    (cd "$ROOT" && "$UV" sync $SYNC_FLAGS --quiet) \
+    (cd "$ROOT" && "$UV" sync --quiet) \
         || die "uv sync failed; check that Python >= 3.11 is installed (uv does not download it) and the package index (UV_DEFAULT_INDEX / pip.conf)" 1
     mkdir -p "$ROOT/.venv" && touch "$ROOT/.venv/.setup-work-synced"
 fi

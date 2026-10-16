@@ -509,6 +509,9 @@ make setup PROFILE=corp-gpu
 
 ## Участие в разработке
 
+Окружение собирается только через корпоративный индекс. Вне корпоративной сети
+задайте индекс явно: `export UV_DEFAULT_INDEX=<url>/simple`.
+
 ```bash
 make sync      # venv uv из uv.lock
 make check     # ruff: линтер + проверка форматирования, pytest, проверка конфигурации

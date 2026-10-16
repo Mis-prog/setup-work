@@ -10,7 +10,7 @@ SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
 UV ?= $(shell command -v uv 2>/dev/null || echo "$(HOME)/.local/bin/uv")
-CLI := $(UV) run --frozen --quiet setup-work
+CLI := $(UV) run --no-sync --quiet setup-work
 VENV_STAMP := .venv/.setup-work-synced
 
 # ---- параметры -> окружение (без подстановки в shell) ------------------------
@@ -221,22 +221,20 @@ profile-show: $(VENV_STAMP) ## Показать итоговый профиль:
 ##@ Разработка
 sync: $(VENV_STAMP) ## Создать/обновить virtualenv проекта из uv.lock
 
+# Same path as stage 0: corporate index from bootstrap.env / pip.conf, never pypi.org.
 $(VENV_STAMP): uv.lock pyproject.toml
-	@if ! command -v "$(UV)" >/dev/null 2>&1 && [ ! -x "$(UV)" ]; then \
-		echo "error: uv not found. Run: make bootstrap   (or sh scripts/bootstrap.sh)" >&2; exit 3; fi
-	@$(UV) sync $(if $(UV_DEFAULT_INDEX)$(UV_INDEX_URL),,--frozen) --quiet
-	@touch $@
+	@sh scripts/bootstrap.sh --sync-only
 
 test: $(VENV_STAMP) ## Запустить тесты
-	@$(UV) run --frozen pytest
+	@$(UV) run --no-sync pytest
 
 lint: $(VENV_STAMP) ## Линтер и проверка форматирования
-	@$(UV) run --frozen ruff check .
-	@$(UV) run --frozen ruff format --check .
+	@$(UV) run --no-sync ruff check .
+	@$(UV) run --no-sync ruff format --check .
 
 format: $(VENV_STAMP) ## Отформатировать код и применить безопасные исправления
-	@$(UV) run --frozen ruff format .
-	@$(UV) run --frozen ruff check --fix .
+	@$(UV) run --no-sync ruff format .
+	@$(UV) run --no-sync ruff check --fix .
 
 check: lint test config-validate ## Линтер + тесты + проверка конфигурации
 
