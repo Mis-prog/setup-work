@@ -1,12 +1,9 @@
-"""Hardware discovery with graceful degradation.
+"""Определение оборудования с обработкой недоступных источников.
 
-Every probe is optional: a missing ``nvidia-smi``, an unreadable ``/proc`` file or
-an unexpected output format results in ``None`` fields and a note, never a crash.
-
-Set ``SETUP_WORK_HARDWARE_FILE=path.json`` (output of ``setup-work hardware --json``)
-to replace live detection with a recorded machine; this is how recommendations
-are tested and how you can plan for a server from your laptop.
-"""
+Отсутствующий nvidia-smi, недоступный /proc или неожиданный формат ответа
+оставляют неизвестные поля и пояснение вместо аварийного завершения.
+SETUP_WORK_HARDWARE_FILE позволяет использовать сохранённый профиль машины
+вместо определения текущего оборудования."""
 
 from __future__ import annotations
 
@@ -28,7 +25,7 @@ MiB = 1024**2
 
 ProbeFn = Callable[[Sequence[str]], Result]
 
-# Fallback when the driver is too old to report compute_cap (added in R510).
+# Резервное определение compute_cap для драйверов старше R510.
 _CC_BY_NAME: list[tuple[str, str]] = [
     (r"\bB(100|200)\b|GB200", "10.0"),
     (r"RTX PRO 6000|RTX 50\d0", "12.0"),
@@ -118,14 +115,14 @@ class HardwareInfo:
     notes: list[str] = field(default_factory=list)
     source: str = "live"
 
-    # ------------------------------------------------------------ derived views
+    # ------------------------------------------------------------ вычисляемые свойства
     @property
     def gpu_count(self) -> int:
         return len(self.gpus)
 
     @property
     def total_vram_bytes(self) -> int | None:
-        """Aggregate VRAM across discrete devices. NOT a single usable pool."""
+        """Сумма видеопамяти отдельных устройств, не единый доступный пул."""
         if not self.gpus or self.accelerator == "apple":
             return None
         vals = [g.memory_total_bytes for g in self.gpus]
@@ -147,7 +144,7 @@ class HardwareInfo:
         d["summary"] = {
             "gpu_count": self.gpu_count,
             "total_vram_bytes": self.total_vram_bytes,
-            "total_vram_note": "aggregate of independent devices; not a shared memory pool",
+            "total_vram_note": "сумма памяти отдельных устройств, не общий пул",
             "homogeneous_gpus": self.homogeneous_gpus,
             "min_compute_capability": self.min_compute_capability,
             "effective_ram_bytes": self.memory.effective_total,
@@ -174,7 +171,7 @@ class HardwareInfo:
         )
 
 
-# ------------------------------------------------------------------ helpers
+# ------------------------------------------------------------------ вспомогательные функции
 
 
 def _read(path: str) -> str | None:
@@ -262,10 +259,10 @@ def detect_nvidia(run: ProbeFn) -> tuple[list[GPU], str | None, str | None, list
         res = run(["nvidia-smi", f"--query-gpu={base}", "--format=csv,noheader,nounits"])
         with_cc = False
         if res.ok:
-            notes.append("driver does not report compute capability; inferred from GPU name")
+            notes.append("драйвер не сообщает compute capability; значение определено по имени GPU")
     if not res.ok:
         if res.returncode != 127:
-            notes.append(f"nvidia-smi failed: {(res.stderr or res.stdout).strip()[:200]}")
+            notes.append(f"ошибка nvidia-smi: {(res.stderr or res.stdout).strip()[:200]}")
         return [], None, None, notes
     gpus = parse_nvidia_smi_csv(res.stdout, with_cc)
     driver = None
@@ -327,17 +324,13 @@ def cgroup_memory_limit() -> int | None:
 
 
 def metal_working_set(total_ram: int | None, wired_limit_mb: str | None) -> tuple[int | None, str]:
-    """Approximate Metal's recommendedMaxWorkingSetSize for unified memory.
-
-    macOS caps GPU-wired memory to roughly 2/3 of RAM (3/4 on larger machines).
-    Users can raise it with `sysctl iogpu.wired_limit_mb`, which we honour.
-    """
+    """Оценить рабочий объём Metal с учётом RAM и iogpu.wired_limit_mb."""
     if wired_limit_mb and wired_limit_mb.isdigit() and int(wired_limit_mb) > 0:
         return int(wired_limit_mb) * MiB, "iogpu.wired_limit_mb"
     if not total_ram:
         return None, "unknown"
     frac = 0.75 if total_ram > 36 * GiB else 0.67
-    return int(total_ram * frac), f"estimated ({int(frac * 100)}% of RAM)"
+    return int(total_ram * frac), f"оценка: {int(frac * 100)}% RAM"
 
 
 def detect_os() -> OSInfo:
@@ -432,7 +425,7 @@ def detect(storage_paths: Sequence[Path] = (), run: ProbeFn = probe) -> Hardware
     cpu = detect_cpu(run, osinfo.system)
     mem = detect_memory(run, osinfo.system)
     if mem.cgroup_limit_bytes and mem.total_bytes and mem.cgroup_limit_bytes < mem.total_bytes:
-        notes.append("container memory limit is lower than host RAM; using the limit")
+        notes.append("лимит памяти контейнера меньше RAM хоста; используется лимит")
     hw = HardwareInfo(os=osinfo, cpu=cpu, memory=mem)
 
     if osinfo.system == "Darwin" and osinfo.arch == "arm64":
@@ -453,7 +446,7 @@ def detect(storage_paths: Sequence[Path] = (), run: ProbeFn = probe) -> Hardware
         hw.metal_working_set_bytes = ws
         hw.metal_working_set_source = src
         hw.precisions = ["fp32", "fp16"] + ([] if "M1" in chip else ["bf16"])
-        notes.append("unified memory: GPU and CPU share RAM; GPU budget is the Metal working set")
+        notes.append("GPU и CPU используют общую RAM; бюджет GPU ограничен рабочим объёмом Metal")
     else:
         gpus, driver, cuda, nv_notes = detect_nvidia(run)
         notes.extend(nv_notes)
@@ -465,14 +458,19 @@ def detect(storage_paths: Sequence[Path] = (), run: ProbeFn = probe) -> Hardware
             hw.cuda_toolkit_version = detect_cuda_toolkit(run)
             hw.precisions = nvidia_precisions(hw.min_compute_capability)
             if not hw.homogeneous_gpus:
-                notes.append("GPUs are not identical; tensor parallelism uses the smallest device")
+                notes.append(
+                    "GPU различаются; тензорный параллелизм "
+                    "ограничен памятью наименьшего устройства"
+                )
         elif shutil.which("rocm-smi"):
             hw.accelerator = "amd"
-            notes.append("AMD ROCm detected: not supported by setup-work yet (treated as CPU-only)")
+            notes.append(
+                "обнаружен AMD ROCm; setup-work пока использует для такой машины режим CPU"
+            )
             hw.precisions = ["fp32"]
         else:
             hw.precisions = ["fp32", "fp16"]
-            notes.append("no supported GPU detected: CPU-only inference")
+            notes.append("поддерживаемый GPU не найден; доступен инференс на CPU")
     hw.storage = detect_storage(storage_paths or [Path.home()])
     hw.notes = notes
     return hw

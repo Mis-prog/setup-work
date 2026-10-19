@@ -29,9 +29,9 @@ def _tar_with(tmp_path, name, data=b"x", linkname=None):
 
 
 def test_safe_extract_rejects_traversal(tmp_path):
-    with pytest.raises(SetupWorkError, match="escapes"):
+    with pytest.raises(SetupWorkError, match="выходит за пределы"):
         st.safe_extract(_tar_with(tmp_path, "../evil"), tmp_path / "out")
-    with pytest.raises(SetupWorkError, match="escapes"):
+    with pytest.raises(SetupWorkError, match="выходит за пределы"):
         st.safe_extract(_tar_with(tmp_path, "ok/link", linkname="/etc/passwd"), tmp_path / "o2")
 
 
@@ -41,7 +41,7 @@ def test_safe_extract_ok(tmp_path):
 
 
 def test_download_requires_https_and_checksum(tmp_path, monkeypatch):
-    with pytest.raises(SetupWorkError, match="non-HTTPS"):
+    with pytest.raises(SetupWorkError, match="только по HTTPS"):
         st.download_verified("http://example.com/x", tmp_path / "x", "0" * 64)
 
     class Resp(io.BytesIO):
@@ -52,7 +52,7 @@ def test_download_requires_https_and_checksum(tmp_path, monkeypatch):
             return False
 
     monkeypatch.setattr(st.urllib.request, "urlopen", lambda req, timeout: Resp(b"payload"))
-    with pytest.raises(SetupWorkError, match="checksum mismatch"):
+    with pytest.raises(SetupWorkError, match="не совпадает SHA256"):
         st.download_verified("https://example.com/x", tmp_path / "x", "0" * 64)
     assert not (tmp_path / "x").exists()
     assert not list(tmp_path.glob("*.part"))
@@ -69,15 +69,15 @@ def test_make_link_refuses_foreign_files(tmp_path):
     dest = tmp_path / "bin" / "tool"
     dest.parent.mkdir()
     dest.write_text("user's own binary")
-    with pytest.raises(SetupWorkError, match="not a symlink"):
+    with pytest.raises(SetupWorkError, match="не является символьной ссылкой"):
         st.make_link(target, dest, managed)
     dest.unlink()
     dest.symlink_to("/usr/bin/true")
-    with pytest.raises(SetupWorkError, match="does not manage"):
+    with pytest.raises(SetupWorkError, match="не управляет"):
         st.make_link(target, dest, managed)
     dest.unlink()
     st.make_link(target, dest, managed)
-    st.make_link(target, dest, managed)  # idempotent refresh
+    st.make_link(target, dest, managed)  # повторное обновление без изменения результата
     assert dest.resolve() == target.resolve()
 
 
@@ -92,7 +92,7 @@ def test_dry_run_executes_nothing(tmp_path):
 
 def test_privileged_step_needs_confirmation(tmp_path):
     step = st.Step("command", "sudo", argv=["sudo", "true"], privileged=True)
-    with pytest.raises(Exception, match="confirmation required"):
+    with pytest.raises(Exception, match="требуется подтверждение"):
         st.execute([step], Runner(interactive=False), tmp_path)
 
 
@@ -142,7 +142,7 @@ def test_plan_uv_from_corporate_source(cfg, monkeypatch):
 def test_tools_never_fall_back_to_public_hosts(cfg, monkeypatch):
     monkeypatch.setattr(bs, "_platform", lambda: ("Darwin", "arm64"))
     for plan in (bs.plan_uv, bs.plan_node):
-        with pytest.raises(NotFoundError, match="no corporate source"):
+        with pytest.raises(NotFoundError, match="не задан корпоративный источник"):
             plan(cfg)
     monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env([]))
     (p,) = bs.plan_tools(cfg, ["node"])
@@ -170,5 +170,5 @@ def test_idempotent_when_satisfied(cfg, monkeypatch):
 
 def test_engines_only_from_corporate_artifacts(cfg, hw_a100x4):
     for engine in ("llama.cpp", "vllm"):
-        with pytest.raises(NotFoundError, match="no corporate artifact"):
+        with pytest.raises(NotFoundError, match="не задан корпоративный артефакт"):
             bs.plan_engine(cfg, engine, hw_a100x4)

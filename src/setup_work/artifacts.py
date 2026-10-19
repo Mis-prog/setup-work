@@ -1,17 +1,9 @@
-"""Corporate artifact sources: HDFS (via `hdfs dfs`), local/NFS paths and HTTPS.
+"""Корпоративные артефакты: HDFS, локальные/NFS-каталоги и HTTPS.
 
-An artifact is fetched into ``<data>/artifacts/downloads/`` and unpacked into its
-final directory through a temporary sibling, then marked with
-``.setup-work-artifact.json``. Re-running with the same URI/size/sha256 reuses
-the result, so interrupted runs can simply be repeated.
-
-* HDFS access uses the cluster's own client (``hdfs dfs -stat/-get``) so
-  Kerberos, HA name services and site configuration work exactly as for the
-  user's shell. setup-work never handles passwords or keytabs: without a valid
-  ticket it stops and asks for ``kinit``.
-* Zip archives keep Unix permissions and symlinks (venvs need both); every
-  member is checked for path traversal before anything is written.
-"""
+Архивы загружаются в <data>/artifacts/downloads и распаковываются через временный
+каталог. Маркер .setup-work-artifact.json позволяет переиспользовать установку.
+HDFS читается штатным клиентом кластера с его настройками Kerberos и HA.
+ZIP сохраняет права Unix и символьные ссылки; пути проверяются до распаковки."""
 
 from __future__ import annotations
 
@@ -54,9 +46,9 @@ def local_path(uri: str) -> Path:
 
 
 def _safe_uri(uri: str) -> str:
-    # FsShell has no "--" separator; schema validation already guarantees this.
+    # В FsShell нет разделителя --; допустимость пути уже проверена схемой.
     if uri.startswith("-"):
-        raise SetupWorkError(f"refusing option-like HDFS path {uri!r}")
+        raise SetupWorkError(f"путь HDFS похож на параметр команды и отклонён: {uri!r}")
     return uri
 
 
@@ -64,32 +56,35 @@ def hdfs_cli(h: HdfsConfig) -> str:
     cli = which(h.cli)
     if not cli:
         raise MissingDependencyError(
-            f"HDFS client {h.cli!r} not found",
-            hint="install the Hadoop client or set corporate.hdfs.cli to its full path",
+            f"клиент HDFS {h.cli!r} не найден",
+            hint=(
+                "установите клиент Hadoop или задайте полный "
+                "путь в hdfs.cli файла config/corporate.yaml"
+            ),
         )
     return cli
 
 
 def kerberos_ok(h: HdfsConfig) -> tuple[bool, str]:
-    """`klist -s` exits 0 when the credential cache holds a valid ticket."""
+    """`klist -s` возвращает 0, если в кэше есть действующий билет."""
     if h.kerberos == "off":
-        return True, "kerberos check disabled"
+        return True, "проверка Kerberos отключена"
     if not which("klist"):
         if h.kerberos == "required":
-            return False, "klist not found but kerberos is required"
-        return True, "klist not found (assuming no Kerberos)"
+            return False, "klist не найден, но Kerberos обязателен; установите клиент Kerberos"
+        return True, "klist не найден; предполагается доступ без Kerberos"
     res = probe(["klist", "-s"], timeout=10)
     if res.ok:
-        return True, "valid Kerberos ticket"
-    return False, "no valid Kerberos ticket"
+        return True, "действующий билет Kerberos"
+    return False, "нет действующего билета Kerberos"
 
 
 def require_kerberos(h: HdfsConfig) -> None:
     ok, why = kerberos_ok(h)
     if not ok:
         raise SetupWorkError(
-            f"cannot read HDFS: {why}",
-            hint="run `kinit <user>@<REALM>` (setup-work never asks for your password), then retry",
+            f"не удалось прочитать HDFS: {why}",
+            hint="выполните kinit с вашим пользователем и REALM, затем повторите команду",
         )
 
 
@@ -98,15 +93,15 @@ def hdfs_size(h: HdfsConfig, uri: str) -> int | None:
     res = probe([cli, "dfs", *h.extra_args, "-du", "-s", _safe_uri(uri)], timeout=120)
     if not res.ok:
         msg = (res.stderr or res.stdout).strip().splitlines()
-        tail = msg[-1] if msg else f"exit {res.returncode}"
+        tail = msg[-1] if msg else f"код {res.returncode}"
         if "No such file" in (res.stderr + res.stdout):
-            raise NotFoundError(f"{uri} does not exist on HDFS")
-        raise SetupWorkError(f"hdfs dfs -du failed for {uri}: {tail}")
+            raise NotFoundError(f"{uri} нет на HDFS; проверьте uri в corporate.yaml и hdfs dfs -ls")
+        raise SetupWorkError(f"команда hdfs dfs -du завершилась с ошибкой для {uri}: {tail}")
     first = res.stdout.strip().split()
     return int(first[0]) if first and first[0].isdigit() else None
 
 
-# ------------------------------------------------------------------ inspection
+# ------------------------------------------------------------------ проверка
 
 
 @dataclass
@@ -126,7 +121,7 @@ def inspect(cfg: Config, ref: ArtifactRef) -> ArtifactInfo:
     elif sch == "local":
         p = local_path(ref.uri)
         if not p.exists():
-            raise NotFoundError(f"artifact {p} does not exist")
+            raise NotFoundError(f"артефакт {p} не найден; проверьте uri в corporate.yaml")
         size = (
             p.stat().st_size
             if p.is_file()
@@ -147,7 +142,7 @@ def is_current(dest: Path, ref: ArtifactRef) -> bool:
     return bool(m and m.get("uri") == ref.uri and m.get("sha256") == ref.sha256)
 
 
-# ------------------------------------------------------------------ extraction
+# ------------------------------------------------------------------ распаковка
 
 
 def _zip_is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -155,7 +150,7 @@ def _zip_is_symlink(info: zipfile.ZipInfo) -> bool:
 
 
 def safe_unzip(archive: Path, dest: Path) -> None:
-    """Extract with traversal checks, Unix modes and symlinks (zip -y) preserved."""
+    """Распаковать ZIP с проверкой путей и сохранением прав Unix и ссылок (zip -y)."""
     with zipfile.ZipFile(archive) as zf:
         infos = zf.infolist()
         for info in infos:
@@ -163,8 +158,8 @@ def safe_unzip(archive: Path, dest: Path) -> None:
             if _zip_is_symlink(info):
                 target = zf.read(info).decode("utf-8", "replace")
                 if os.path.isabs(target):
-                    # Absolute links (e.g. venv bin/python -> /usr/bin/python3.12) are
-                    # recreated as-is; they point outside but are only *read* at runtime.
+                    # Абсолютные ссылки, например bin/python на /usr/bin/python3.12,
+                    # воссоздаются как есть; внешние цели используются только для чтения.
                     continue
                 _safe_member(dest, os.path.relpath((dest / info.filename).parent / target, dest))
         dest.mkdir(parents=True, exist_ok=True)
@@ -203,7 +198,7 @@ def _free(path: Path) -> int:
     return shutil.disk_usage(p).free
 
 
-# --------------------------------------------------------------------- install
+# --------------------------------------------------------------------- установка
 
 
 @dataclass
@@ -214,7 +209,7 @@ class FetchResult:
 
 
 def fetch_archive(cfg: Config, ref: ArtifactRef, runner: Runner, name: str) -> Path:
-    """Bring the archive (or file/dir) into the local download cache."""
+    """Поместить архив, файл или каталог в локальный кэш загрузок."""
     downloads = cfg.artifacts_dir / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)
     base = ref.uri.rstrip("/").rsplit("/", 1)[-1] or name
@@ -223,17 +218,19 @@ def fetch_archive(cfg: Config, ref: ArtifactRef, runner: Runner, name: str) -> P
     if sch == "local":
         src = local_path(ref.uri)
         if ref.effective_format == "dir":
-            return src  # use in place; copied during install
+            return src  # использовать исходный каталог; копирование при установке
         if not src.exists():
-            raise NotFoundError(f"artifact {src} does not exist")
+            raise NotFoundError(f"артефакт {src} не найден; проверьте uri в corporate.yaml")
         if target.exists() and target.stat().st_size == src.stat().st_size:
             return target
         runner.run(["cp", "--", str(src), str(target) + ".part"])
     elif sch == "https":
         if not ref.sha256:
-            raise SetupWorkError(f"https artifact {ref.uri} needs a pinned sha256")
+            raise SetupWorkError(
+                f"HTTPS-артефакт {ref.uri} требует SHA256; заполните sha256 в config/corporate.yaml"
+            )
         if runner.dry_run:
-            runner.info(f"  [dim](dry-run) download {ref.uri} -> {target}[/]")
+            runner.info(f"  [dim](dry-run) загрузить {ref.uri} -> {target}[/]")
             return target
         return download_verified(ref.uri, target, ref.sha256, timeout=3600)
     else:
@@ -242,7 +239,7 @@ def fetch_archive(cfg: Config, ref: ArtifactRef, runner: Runner, name: str) -> P
         cli = hdfs_cli(h)
         size = hdfs_size(h, ref.uri)
         if target.exists() and size is not None and _size_of(target) == size:
-            runner.info(f"  reusing {target}")
+            runner.info(f"  используется установленная копия {target}")
             return target
         part = Path(str(target) + ".part")
         if part.exists():
@@ -279,41 +276,43 @@ def install(
     keep_archive_default: bool = False,
     confirm_large: bool = True,
 ) -> FetchResult:
-    """Fetch + verify + unpack `ref` into `dest` (idempotent)."""
+    """Загрузить, проверить и распаковать ref в dest; повторная установка переиспользуется."""
     if is_current(dest, ref):
-        runner.info(f"[green]up to date[/] {name} at {dest}")
+        runner.info(f"[green]уже установлен[/] {name} at {dest}")
         return FetchResult(dest, reused=True)
     info = inspect(cfg, ref)
     size = info.size_bytes
     fmt = info.format
-    # Archive + unpacked copy (weights barely compress) + margin.
+    # Архив, распакованная копия весов и запас места.
     need = (size or 0) * (2 if fmt in ("zip", "tar", "tar.gz") else 1) + 1024**3
     free = _free(dest.parent)
     runner.info(
-        f"{name}: {info.uri} ({gib(size) if size else 'size unknown'}, {fmt}) -> {dest}; "
+        f"{name}: {info.uri} ({gib(size) if size else 'размер неизвестен'}, {fmt}) -> {dest}; "
         f"{gib(free)} free"
     )
     if size and need > free:
         raise SetupWorkError(
-            f"not enough disk space for {name}: need ~{gib(need)}, "
-            f"{gib(free)} free at {dest.parent}",
-            hint="set SETUP_WORK_MODEL_DIR / XDG_DATA_HOME to a larger volume",
+            f"недостаточно места на диске для {name}: требуется примерно{gib(need)}, "
+            f"{gib(free)} свободно в {dest.parent}",
+            hint="укажите том с достаточным местом через SETUP_WORK_MODEL_DIR или SETUP_WORK_HOME",
         )
     threshold = cfg.defaults.downloads.confirm_above_gb * 1e9
     if confirm_large and (size is None or size > threshold):
-        runner.require_confirmation(f"Fetch {gib(size) if size else 'unknown size'} for {name}?")
+        runner.require_confirmation(
+            f"Загрузить {gib(size) if size else 'неизвестный размер'} для {name}?"
+        )
     archive = fetch_archive(cfg, ref, runner, name)
     if runner.dry_run:
-        runner.info(f"  [dim](dry-run) unpack {archive} -> {dest}[/]")
+        runner.info(f"  [dim](dry-run) распаковать {archive} -> {dest}[/]")
         return FetchResult(dest, reused=False, archive=archive)
     if ref.sha256 and archive.is_file():
-        runner.info(f"  verifying sha256 of {archive.name} ...")
+        runner.info(f"  проверка SHA256 архива {archive.name} ...")
         got = sha256_file(archive)
         if got != ref.sha256:
             archive.unlink()
             raise SetupWorkError(
-                f"checksum mismatch for {ref.uri}\n  expected {ref.sha256}\n  got      {got}",
-                hint="the local copy was deleted; check the artifact or its pinned sha256",
+                f"не совпадает SHA256 для {ref.uri}\n  ожидается {ref.sha256}\n  получено {got}",
+                hint="локальная копия удалена; проверьте архив и sha256 в config/corporate.yaml",
             )
     staging = dest.parent / f".{dest.name}.unpacking"
     if staging.exists():
@@ -325,9 +324,9 @@ def install(
                 total = uncompressed_size(archive, fmt)
                 if total + 512 * 1024**2 > _free(staging):
                     raise SetupWorkError(
-                        f"not enough space to unpack {gib(total)} into {dest.parent}"
+                        f"недостаточно места для распаковки {gib(total)} в {dest.parent}"
                     )
-            runner.info(f"  unpacking {archive.name} ...")
+            runner.info(f"  распаковка {archive.name} ...")
             if fmt == "zip":
                 safe_unzip(archive, staging)
             else:
@@ -336,7 +335,7 @@ def install(
                 safe_extract(archive, staging)
         elif fmt == "dir":
             shutil.copytree(archive, staging, symlinks=True, dirs_exist_ok=True)
-        else:  # single file
+        else:  # один файл
             shutil.copy2(archive, staging / archive.name.split("--", 1)[-1])
         (staging / MARKER).write_text(
             json.dumps(
@@ -369,6 +368,6 @@ def install(
 
 
 def find_one(root: Path, pattern: str) -> Path | None:
-    """Shallowest match of a glob below root (deterministic)."""
+    """Найти ближайший к корню путь по шаблону с постоянным порядком выбора."""
     hits = sorted(root.rglob(pattern), key=lambda p: (len(p.parts), str(p)))
     return hits[0] if hits else None

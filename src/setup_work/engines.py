@@ -1,17 +1,8 @@
-"""Inference engine adapters.
+"""Адаптеры движков инференса.
 
-An engine adapter owns everything engine-specific:
-
-* ``compatibility``: can this weight variant run on this hardware at all, and how
-  sure are we? (OS, accelerator, compute capability, quantization kernels)
-* ``fit``: does it fit in memory for the requested context/concurrency, and with
-  which parallelism / offloading layout?
-* ``build_command`` / ``build_env``: the exact argv and environment to launch it.
-
-Process lifecycle (start, stop, readiness, logs, state files) is identical for
-all OpenAI-compatible servers and lives in :mod:`setup_work.inference`. Adding
-SGLang means writing one more adapter class and registering it in ``ENGINES``.
-"""
+Адаптер проверяет совместимость формата и железа, оценивает память, подбирает
+параллелизм и выгрузку на CPU, формирует команду и окружение сервера.
+Запуск, остановка, проверка готовности и логи находятся в inference.py."""
 
 from __future__ import annotations
 
@@ -43,7 +34,7 @@ class Compat:
     level: Level = "supported"
     confidence: Confidence = "high"
     reasons: list[str] = field(default_factory=list)
-    dtype: str | None = None  # compute dtype to request (vLLM --dtype)
+    dtype: str | None = None  # вычислительный тип для vLLM --dtype
 
     def downgrade(self, confidence: Confidence, reason: str, level: Level | None = None) -> None:
         if _CONF_ORDER[confidence] < _CONF_ORDER[self.confidence]:
@@ -86,12 +77,12 @@ class FitPlan:
 
 @dataclass
 class LaunchConfig:
-    """Everything needed to start a server. Built by `inference.plan_launch`."""
+    """Параметры запуска сервера, подготовленные inference.plan_launch."""
 
     name: str
     engine: str
-    model_ref: str  # catalog ref or user-supplied id
-    model_path: str  # local file (gguf) or local model dir (vllm)
+    model_ref: str  # ссылка каталога или идентификатор пользователя
+    model_path: str  # локальный GGUF или каталог модели vLLM
     served_model_name: str
     host: str = "127.0.0.1"
     port: int = 8000
@@ -113,7 +104,7 @@ class LaunchConfig:
     @property
     def base_url(self) -> str:
         host = self.host
-        if host in ("0.0.0.0", "::"):  # noqa: S104 - wildcard binds are reached via loopback
+        if host in ("0.0.0.0", "::"):  # noqa: S104 - обращение к общему адресу выполняется через loopback
             host = "127.0.0.1"
         if ":" in host:
             host = f"[{host}]"
@@ -157,7 +148,7 @@ class VllmEngine:
     health_path = "/health"
 
     def find_binary(self, cfg: Config) -> str | None:
-        """Corporate venv interpreter first, then the managed venv, then PATH."""
+        """Искать Python сначала в корпоративном venv, затем в управляемом venv и PATH."""
         corp = cfg.engines_dir / "vllm" / "current" / "bin" / "python"
         if corp.exists():
             return str(corp)
@@ -166,63 +157,77 @@ class VllmEngine:
     def compatibility(self, model: ModelSpec, variant: Variant, hw: HardwareInfo) -> Compat:
         c = Compat()
         if variant.format != "safetensors" or "vllm" not in variant.engines:
-            return c.reject(f"variant {variant.id} ({variant.format}) is not packaged for vLLM")
+            return c.reject(f"вариант {variant.id} ({variant.format}) не подготовлен для vLLM")
         if hw.os.system != "Linux":
-            return c.reject("vLLM GPU inference requires Linux; use llama.cpp on this OS")
+            return c.reject(
+                "для управляемого запуска vLLM на GPU нужна Linux; на этой ОС используйте llama.cpp"
+            )
         if hw.accelerator != "nvidia" or not hw.gpus:
-            return c.reject("vLLM needs an NVIDIA GPU (CPU/ROCm backends are not managed here)")
+            return c.reject(
+                "для управляемого запуска vLLM нужен NVIDIA GPU; CPU/ROCm здесь не обслуживаются"
+            )
         cc = hw.min_compute_capability
         if cc is None:
-            c.downgrade("low", "GPU compute capability unknown; kernel support unverified")
+            c.downgrade(
+                "low",
+                "compute capability GPU неизвестна; поддержка вычислительных ядер не проверена",
+            )
             cc = 7.0
         if cc < 7.0:
-            return c.reject(f"vLLM requires compute capability >= 7.0 (found {cc})")
+            return c.reject(f"vLLM требует compute capability >= 7.0; обнаружено {cc})")
         q = variant.quantization
         if q == "none":
             want = variant.dtype or "bf16"
             if want == "bf16" and cc < 8.0:
                 if not model.fp16_safe:
                     return c.reject(
-                        f"bf16 needs compute capability >= 8.0 (found {cc}) and "
-                        f"{model.display_name} is not numerically safe in fp16"
+                        f"bf16 требует compute capability >= 8.0; обнаружено {cc}) and "
+                        f"{model.display_name} не обеспечивает численную устойчивость в fp16"
                     )
                 c.dtype = "half"
-                c.downgrade("medium", f"no bf16 on compute capability {cc}: running in fp16")
+                c.downgrade(
+                    "medium", f"bf16 недоступен при compute capability {cc}: используется fp16"
+                )
             else:
                 c.dtype = "bfloat16" if want == "bf16" else "half"
         elif q == "fp8":
             if cc >= 8.9:
-                c.reasons.append("native FP8 tensor cores")
-            elif cc >= 8.0:
-                c.downgrade(
-                    "medium", "FP8 runs as weight-only (Marlin) below compute capability 8.9"
-                )
-            else:
-                return c.reject(f"FP8 checkpoints need compute capability >= 8.0 (found {cc})")
-        elif q == "awq":
-            if cc >= 8.0:
-                c.reasons.append("AWQ via Marlin kernels")
-            elif cc >= 7.5:
-                c.downgrade("medium", "AWQ without Marlin kernels on compute capability 7.5")
-            else:
-                return c.reject(f"vLLM AWQ kernels need compute capability >= 7.5 (found {cc})")
-            if not model.fp16_safe:
-                c.downgrade("low", "AWQ runs activations in fp16; model is fp16-sensitive")
-        elif q == "mxfp4":
-            if cc >= 9.0:
-                c.reasons.append("MXFP4 kernels for Hopper/Blackwell")
+                c.reasons.append("аппаратные тензорные ядра FP8")
             elif cc >= 8.0:
                 c.downgrade(
                     "medium",
-                    "MXFP4 on Ampere/Ada uses fallback kernels; verify with your vLLM version",
+                    "при compute capability ниже 8.9 FP8 работает через Marlin только для весов",
+                )
+            else:
+                return c.reject(
+                    f"для весов FP8 требуется compute capability >= 8.0; обнаружено {cc})"
+                )
+        elif q == "awq":
+            if cc >= 8.0:
+                c.reasons.append("AWQ через вычислительные ядра Marlin")
+            elif cc >= 7.5:
+                c.downgrade("medium", "AWQ без Marlin при compute capability 7.5")
+            else:
+                return c.reject(
+                    f"для AWQ в vLLM требуется compute capability >= 7.5; обнаружено {cc})"
+                )
+            if not model.fp16_safe:
+                c.downgrade("low", "активации AWQ используют fp16, но модель чувствительна к fp16")
+        elif q == "mxfp4":
+            if cc >= 9.0:
+                c.reasons.append("вычислительные ядра MXFP4 для Hopper/Blackwell")
+            elif cc >= 8.0:
+                c.downgrade(
+                    "medium",
+                    "MXFP4 на Ampere/Ada использует резервные ядра; проверьте вашу версию vLLM",
                     level="experimental",
                 )
             else:
-                return c.reject(f"MXFP4 needs compute capability >= 8.0 (found {cc})")
+                return c.reject(f"для MXFP4 требуется compute capability >= 8.0; обнаружено {cc})")
         else:
-            return c.reject(f"quantization {q} is not handled by the vLLM adapter")
+            return c.reject(f"квантование {q} не поддерживается адаптером vLLM")
         if "embedding" in model.workloads:
-            c.downgrade("medium", "served with the pooling runner (/v1/embeddings)")
+            c.downgrade("medium", "используется режим эмбеддингов через /v1/embeddings")
         return c
 
     def _candidate_tp(self, model: ModelSpec, hw: HardwareInfo, req: FitRequest) -> list[int]:
@@ -242,12 +247,14 @@ class VllmEngine:
         partial: FitPlan | None = None
         for tp in self._candidate_tp(model, hw, req):
             if tp > hw.gpu_count:
-                return FitPlan(False, "none", reasons=[f"TP={tp} but only {hw.gpu_count} GPU(s)"])
+                return FitPlan(
+                    False, "none", reasons=[f"TP={tp} при доступных {hw.gpu_count} GPU(s)"]
+                )
             if att.num_attention_heads % tp:
                 return FitPlan(
                     False,
                     "none",
-                    reasons=[f"{att.num_attention_heads} attention heads not divisible by TP={tp}"],
+                    reasons=[f"{att.num_attention_heads} голов внимания не делятся на TP={tp}"],
                 )
             devs = sorted(hw.gpus, key=lambda g: g.index)[:tp]
             totals = [g.memory_total_bytes or 0 for g in devs]
@@ -264,7 +271,7 @@ class VllmEngine:
                     0.1, min((f - margin) / t for t, f in zip(totals, frees, strict=True) if t)
                 )
                 warnings.append(
-                    f"GPU memory already in use: lowering gpu_memory_utilization to {safe_util:.2f}"
+                    f"видеопамять уже занята: gpu_memory_utilization уменьшается до {safe_util:.2f}"
                 )
                 util = round(safe_util - 0.005, 2)
             w = weight_bytes_per_shard(variant.bytes, tp)
@@ -273,36 +280,38 @@ class VllmEngine:
             est = Estimate(w, kv_need, overhead)
             if kv_avail <= 0:
                 attempts.append(
-                    f"TP={tp}: weights {gib(w)} + overhead {gib(overhead)} exceed "
-                    f"per-GPU budget {gib(budget)}"
+                    f"TP={tp}: веса {gib(w)} + накладные расходы {gib(overhead)} превышают "
+                    f"бюджет одного GPU {gib(budget)}"
                 )
                 continue
             one_seq = kv_cache_bytes(att, req.context, 1, req.kv_cache_dtype, tp)
             if kv_avail < one_seq:
                 ctx_max = max_context_for_budget(att, kv_avail, 1, req.kv_cache_dtype, tp)
                 attempts.append(
-                    f"TP={tp}: KV cache for one {req.context}-token sequence needs {gib(one_seq)}, "
-                    f"only {gib(kv_avail)} left (max context ~{ctx_max})"
+                    f"TP={tp}: KV-кэш {req.context} токенов требует {gib(one_seq)}, "
+                    f"only {gib(kv_avail)} доступно (макс. контекст примерно{ctx_max})"
                 )
                 continue
             eff_conc = req.concurrency
             if kv_avail < kv_need:
                 eff_conc = max(1, int(kv_avail // max(one_seq, 1)))
                 warnings.append(
-                    f"KV cache holds ~{eff_conc} concurrent {req.context}-token sequences "
-                    f"(requested {req.concurrency})"
+                    f"KV-кэш: примерно {eff_conc} запросов по {req.context} токенов "
+                    f"(запрошено {req.concurrency})"
                 )
             reasons = [
-                f"TP={tp}: per-GPU weights {gib(w)} + KV {gib(min(kv_need, kv_avail))} + "
-                f"overhead {gib(overhead)} within budget {gib(budget)} "
-                f"(utilization {util:.2f}, margin {gib(margin)})"
+                f"TP={tp}: веса на GPU {gib(w)} + KV {gib(min(kv_need, kv_avail))} + "
+                f"накладные расходы {gib(overhead)} в пределах бюджета {gib(budget)} "
+                f"(использование {util:.2f}, запас {gib(margin)})"
             ]
             if tp > 1:
                 if not hw.homogeneous_gpus:
-                    warnings.append("heterogeneous GPUs: every rank is limited by the smallest one")
+                    warnings.append("разные GPU: каждая доля ограничена наименьшим устройством")
                 if att.num_kv_heads < tp:
-                    warnings.append(f"{att.num_kv_heads} KV heads < TP={tp}: KV heads replicated")
-                warnings.append("multi-GPU TP performance depends on interconnect (NVLink vs PCIe)")
+                    warnings.append(
+                        f"{att.num_kv_heads} KV-голов < TP={tp}: KV-головы реплицируются"
+                    )
+                warnings.append("скорость TP на нескольких GPU зависит от соединения NVLink/PCIe")
             plan = FitPlan(
                 True,
                 "multi-gpu" if tp > 1 else "full-gpu",
@@ -321,21 +330,21 @@ class VllmEngine:
             )
             if eff_conc >= req.concurrency:
                 return plan
-            # Prefer a larger TP degree that serves the requested concurrency in full.
+            # Предпочесть больший TP, обеспечивающий запрошенное число одновременных запросов.
             partial = partial or plan
-            attempts.append(f"TP={tp}: fits only {eff_conc}/{req.concurrency} concurrent sequences")
+            attempts.append(f"TP={tp}: помещается {eff_conc}/{req.concurrency} запросов")
         if partial is not None:
             return partial
         if not attempts:
             attempts.append(
-                f"no valid tensor-parallel degree for {hw.gpu_count} GPU(s) and "
-                f"{att.num_attention_heads} attention heads"
+                f"нет подходящей степени тензорного параллелизма для {hw.gpu_count} GPU и "
+                f"{att.num_attention_heads} голов внимания"
             )
         return FitPlan(False, "none", reasons=attempts)
 
     def build_command(self, launch: LaunchConfig, binary: str) -> list[str]:
-        # A venv unpacked from an archive may have stale script shebangs: run the CLI
-        # through its interpreter instead of bin/vllm.
+        # В распакованном venv строки запуска могут указывать на старые пути: запускать CLI
+        # через интерпретатор, а не bin/vllm.
         head = [binary, "-c", VLLM_LAUNCHER] if Path(binary).name.startswith("python") else [binary]
         argv = [*head, "serve", launch.model_path]
         argv += ["--host", launch.host, "--port", str(launch.port)]
@@ -365,7 +374,7 @@ class VllmEngine:
             env["VIRTUAL_ENV"] = str(venv)
             env["PATH"] = os.pathsep.join([str(venv / "bin"), os.environ.get("PATH", "")])
         if launch.api_key_file:
-            # vLLM reads VLLM_API_KEY; keeps the secret out of argv / `ps` output.
+            # vLLM читает VLLM_API_KEY; ключ не попадает в argv и вывод ps.
             env["VLLM_API_KEY"] = Path(launch.api_key_file).read_text(encoding="utf-8").strip()
         return env
 
@@ -385,29 +394,36 @@ class LlamaCppEngine:
     def compatibility(self, model: ModelSpec, variant: Variant, hw: HardwareInfo) -> Compat:
         c = Compat()
         if variant.format != "gguf" or "llama.cpp" not in variant.engines:
-            return c.reject(f"variant {variant.id} ({variant.format}) is not a GGUF artifact")
+            return c.reject(f"вариант {variant.id} ({variant.format}) не является GGUF-артефактом")
         if hw.os.system not in ("Linux", "Darwin"):
-            return c.reject(f"{hw.os.system} is not supported by setup-work")
+            return c.reject(f"{hw.os.system} не поддерживается setup-work")
         if hw.accelerator == "nvidia":
             cc = hw.min_compute_capability
             if cc is None:
                 c.downgrade(
-                    "medium", "GPU compute capability unknown; CUDA build compatibility assumed"
+                    "medium",
+                    "compute capability неизвестна; совместимость сборки CUDA предполагается",
                 )
             elif cc < 6.0:
-                c.downgrade("medium", f"compute capability {cc} too old for CUDA builds: CPU only")
+                c.downgrade(
+                    "medium",
+                    f"compute capability {cc} недостаточна для сборок CUDA: доступен только CPU",
+                )
             if hw.os.arch != "x86_64":
-                c.downgrade("medium", "prebuilt CUDA binaries are x86_64; ARM needs a source build")
+                c.downgrade(
+                    "medium",
+                    "готовые CUDA-бинарники рассчитаны на x86_64; для ARM нужна собственная сборка",
+                )
         elif hw.accelerator == "apple":
-            c.reasons.append("Metal backend on Apple Silicon")
+            c.reasons.append("Metal на Apple Silicon")
         else:
-            c.reasons.append("CPU backend")
+            c.reasons.append("вычисления на CPU")
         if variant.provenance == "community":
-            c.downgrade("medium", "third-party GGUF conversion")
+            c.downgrade("medium", "сторонняя конвертация в GGUF")
         if variant.quantization == "mxfp4" and hw.accelerator == "nvidia":
             cc = hw.min_compute_capability or 0
             if cc < 7.5:
-                c.downgrade("low", "MXFP4 GGUF on pre-Turing GPUs is untested")
+                c.downgrade("low", "MXFP4 GGUF не проверен на GPU старше Turing")
         return c
 
     def fit(
@@ -419,7 +435,7 @@ class LlamaCppEngine:
         ram_margin = int(cfg.defaults.recommend.ram_safety_margin_gb * GiB)
         att = model.attention
         w = variant.bytes
-        # llama.cpp splits -c across --parallel slots; total cache = context x slots.
+        # llama.cpp делит -c между слотами --parallel; общий кэш = контекст × слоты.
         kv = kv_cache_bytes(att, req.context, req.concurrency, req.kv_cache_dtype)
         need = w + kv + overhead
         est = Estimate(w, kv, overhead)
@@ -449,10 +465,10 @@ class LlamaCppEngine:
                     max_context=self._max_ctx(model, budget - w - overhead, req),
                     effective_concurrency=req.concurrency,
                     reasons=[
-                        f"weights {gib(w)} + KV {gib(kv)} + overhead {gib(overhead)} = {gib(need)} "
+                        f"веса {gib(w)} + KV {gib(kv)} + запас {gib(overhead)} = {gib(need)} "
                         f"within Metal working set budget {gib(budget)}"
                     ],
-                    warnings=["unified memory: other applications compete for the same RAM"]
+                    warnings=["общая память: другие приложения используют ту же RAM"]
                     if need > 0.7 * budget
                     else [],
                 )
@@ -461,7 +477,7 @@ class LlamaCppEngine:
                 "none",
                 estimate=est,
                 budget_bytes=budget,
-                reasons=[f"needs {gib(need)}, Metal working set budget is {gib(budget)}"],
+                reasons=[f"требуется {gib(need)}, бюджет рабочего объёма Metal {gib(budget)}"],
             )
 
         if usable_gpus:
@@ -479,13 +495,13 @@ class LlamaCppEngine:
                     split = [round(b / tot, 3) for b in budgets]
                     layout = "multi-gpu"
                     reasons.append(
-                        "layer split across GPUs (no peer-to-peer memory sharing assumed)"
+                        "распределение слоёв между GPU без предположения об общей памяти P2P"
                     )
                 reasons.insert(
                     0,
-                    f"weights {gib(w)} + KV {gib(kv)} = {gib(w + kv)} within GPU budget "
-                    f"{gib(gpu_budget if split else budgets[0])} (after {gib(overhead)} runtime "
-                    f"overhead and {gib(margin)} margin per GPU)",
+                    f"веса {gib(w)} + KV {gib(kv)} = {gib(w + kv)} в пределах бюджета GPU "
+                    f"{gib(gpu_budget if split else budgets[0])} (после {gib(overhead)} накладных "
+                    f"расходов и {gib(margin)} запаса на каждый GPU)",
                 )
                 return FitPlan(
                     True,
@@ -499,7 +515,7 @@ class LlamaCppEngine:
                     effective_concurrency=req.concurrency,
                     reasons=reasons,
                 )
-            # Partial offload: each offloaded layer brings its weights and KV slice.
+            # При частичной выгрузке каждый слой переносится со своими весами и KV-кэшем.
             per_layer = (w + kv) / att.num_layers
             layers = int(gpu_budget // per_layer) if per_layer else 0
             layers = min(layers, att.num_layers - 1)
@@ -515,14 +531,14 @@ class LlamaCppEngine:
                     max_context=None,
                     effective_concurrency=req.concurrency,
                     reasons=[
-                        f"{gib(need)} does not fit in GPU budget {gib(gpu_budget)}: offloading "
-                        f"{layers}/{att.num_layers} layers, {gib(host_need)} stays in system RAM"
+                        f"{gib(need)} не помещается в бюджет GPU {gib(gpu_budget)}: выгрузка "
+                        f"{layers}/{att.num_layers} слоёв; в RAM остаётся {gib(host_need)}"
                     ],
-                    warnings=["partial CPU offload: expect much lower throughput"],
+                    warnings=["частичная выгрузка на CPU существенно снижает скорость"],
                 )
             reasons.append(
-                f"needs {gib(need)}; GPU budget {gib(gpu_budget)} and RAM "
-                f"{gib(ram_avail - ram_margin)} insufficient for partial offload"
+                f"требуется {gib(need)}; бюджет GPU {gib(gpu_budget)} и RAM "
+                f"{gib(ram_avail - ram_margin)} недостаточен для частичной выгрузки"
             )
             return FitPlan(False, "none", estimate=est, budget_bytes=gpu_budget, reasons=reasons)
 
@@ -537,15 +553,15 @@ class LlamaCppEngine:
                 budget_bytes=budget,
                 max_context=self._max_ctx(model, budget - w - overhead, req),
                 effective_concurrency=req.concurrency,
-                reasons=[f"CPU inference: {gib(need)} within available RAM budget {gib(budget)}"],
-                warnings=["CPU-only inference: throughput is bounded by memory bandwidth"],
+                reasons=[f"инференс на CPU: {gib(need)} в пределах доступной RAM {gib(budget)}"],
+                warnings=["скорость инференса на CPU ограничена пропускной способностью памяти"],
             )
         return FitPlan(
             False,
             "none",
             estimate=est,
             budget_bytes=budget,
-            reasons=[f"needs {gib(need)}, available RAM budget is {gib(budget)}"],
+            reasons=[f"требуется {gib(need)}, доступный бюджет RAM {gib(budget)}"],
         )
 
     @staticmethod
@@ -559,7 +575,7 @@ class LlamaCppEngine:
         argv = [binary, "-m", launch.model_path, "--host", launch.host, "--port", str(launch.port)]
         argv += ["-a", launch.served_model_name]
         if launch.context:
-            # -c is the total cache shared by all slots.
+            # -c задаёт общий объём кэша для всех слотов.
             argv += ["-c", str(launch.context * max(1, launch.concurrency))]
         argv += ["-np", str(max(1, launch.concurrency))]
         if launch.gpu_layers is not None:
@@ -583,7 +599,7 @@ class LlamaCppEngine:
 
     @staticmethod
     def runtime_env(binary: str) -> dict[str, str]:
-        """Expose shared libraries shipped next to llama-server in the corporate build."""
+        """Добавить в окружение библиотеки, лежащие рядом с llama-server."""
         bdir = Path(binary).resolve().parent
         if not any(bdir.glob("*.so*")):
             return {}
@@ -596,7 +612,7 @@ def _default_threads() -> int | None:
     n = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
     if not n:
         return None
-    # Generation is memory-bound; leaving cores free keeps the machine responsive.
+    # Генерация ограничена памятью; свободные ядра сохраняют отзывчивость системы.
     return max(1, math.ceil(n * 0.75)) if n > 4 else n
 
 
@@ -610,7 +626,7 @@ def get_engine(name: str) -> InferenceEngine:
     key = aliases.get(name.lower(), name.lower())
     if key not in ENGINES:
         raise UsageError(
-            f"unknown engine {name!r}",
-            hint=f"choose one of: {', '.join(ENGINES)} (SGLang is planned)",
+            f"неизвестный движок {name!r}",
+            hint=f"выберите один из: {', '.join(ENGINES)} (SGLang пока не реализован)",
         )
     return ENGINES[key]

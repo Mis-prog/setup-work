@@ -48,16 +48,16 @@ def test_user_overrides_merge(tmp_path, monkeypatch):
     (user / "defaults.yaml").write_text("inference:\n  port: 9999\n")
     cfg = Config()
     assert "my-agent" in cfg.harnesses.harnesses
-    assert "claude-code" in cfg.harnesses.harnesses  # built-ins kept
+    assert "claude-code" in cfg.harnesses.harnesses  # встроенные записи сохранены
     assert cfg.defaults.inference.port == 9999
-    assert cfg.defaults.inference.host == "127.0.0.1"  # untouched keys preserved
+    assert cfg.defaults.inference.host == "127.0.0.1"  # остальные ключи сохранены
 
 
 def test_invalid_yaml_reports_file(tmp_path):
     user = tmp_path / "userconf"
     user.mkdir(exist_ok=True)
     (user / "models.yaml").write_text("models: [unclosed\n")
-    with pytest.raises(ConfigError, match="invalid YAML"):
+    with pytest.raises(ConfigError, match="неверный YAML"):
         _ = Config().models
 
 
@@ -82,7 +82,7 @@ def test_expand_path_defaults():
                 "ref": "main",
                 "install": {"method": "uv"},
             },
-            "must be an https",
+            "должен быть URL https",
         ),
         (
             {
@@ -91,7 +91,7 @@ def test_expand_path_defaults():
                 "ref": "main",
                 "install": {"method": "uv"},
             },
-            "must be an https",
+            "должен быть URL https",
         ),
         (
             {
@@ -100,7 +100,7 @@ def test_expand_path_defaults():
                 "ref": "main",
                 "install": {"method": "uv"},
             },
-            "must be an https",
+            "должен быть URL https",
         ),
         (
             {
@@ -108,7 +108,7 @@ def test_expand_path_defaults():
                 "repository": "https://bitbucket.corp.example/scm/a/b.git",
                 "install": {"method": "uv"},
             },
-            "requires 'ref'",
+            "заполните ref",
         ),
         (
             {
@@ -117,7 +117,7 @@ def test_expand_path_defaults():
                 "ref": "-x",
                 "install": {"method": "uv"},
             },
-            "invalid git ref",
+            "неверное значение ref для Git",
         ),
         (
             {
@@ -127,12 +127,12 @@ def test_expand_path_defaults():
             },
             "install.method",
         ),
-        ({"source": "npm", "package": "foo"}, "requires 'version'"),
-        ({"source": "npm", "package": "Foo Bar", "version": "1.0.0"}, "invalid npm package"),
-        ({"source": "pypi", "package": "x", "version": "1; rm -rf /"}, "invalid version"),
+        ({"source": "npm", "package": "foo"}, "точную версию в поле version"),
+        ({"source": "npm", "package": "Foo Bar", "version": "1.0.0"}, "неверное имя пакета npm"),
+        ({"source": "pypi", "package": "x", "version": "1; rm -rf /"}, "неверная версия"),
         (
             {"source": "pypi", "package": "x", "version": "1.0", "binaries": ["../evil"]},
-            "invalid binary",
+            "неверное имя исполняемого файла",
         ),
         (
             {
@@ -141,9 +141,9 @@ def test_expand_path_defaults():
                 "version": "1.0",
                 "environment": {"required": ["lower-case"]},
             },
-            "invalid environment",
+            "неверное имя переменной окружения",
         ),
-        ({"source": "local"}, "requires 'path'"),
+        ({"source": "local"}, "заполните path"),
         ({"source": "svn", "package": "x"}, "Input should be"),
     ],
 )
@@ -205,9 +205,9 @@ def _model(**over):
 
 def test_model_validation_rules():
     ModelSpec.model_validate(_model())
-    with pytest.raises(ValidationError, match="MoE models must declare"):
+    with pytest.raises(ValidationError, match="для MoE заполните"):
         ModelSpec.model_validate(_model(architecture="moe"))
-    with pytest.raises(ValidationError, match="gguf variants must list"):
+    with pytest.raises(ValidationError, match="для GGUF заполните files"):
         ModelSpec.model_validate(
             _model(
                 variants=[
@@ -222,7 +222,7 @@ def test_model_validation_rules():
                 ]
             )
         )
-    with pytest.raises(ValidationError, match="llama.cpp only loads GGUF"):
+    with pytest.raises(ValidationError, match="для llama.cpp требуется format: gguf"):
         ModelSpec.model_validate(
             _model(
                 variants=[
@@ -237,7 +237,7 @@ def test_model_validation_rules():
                 ]
             )
         )
-    with pytest.raises(ValidationError, match="invalid repository id"):
+    with pytest.raises(ValidationError, match="неверный идентификатор репозитория"):
         ModelSpec.model_validate(
             _model(
                 variants=[
@@ -252,7 +252,7 @@ def test_model_validation_rules():
                 ]
             )
         )
-    with pytest.raises(ValidationError, match="multiple of num_kv_heads"):
+    with pytest.raises(ValidationError, match="кратен num_kv_heads"):
         ModelSpec.model_validate(
             _model(
                 attention={

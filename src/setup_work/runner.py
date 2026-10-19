@@ -1,12 +1,8 @@
-"""Safe execution primitives shared by every module.
+"""Общие средства выполнения команд.
 
-* Commands are argv lists, never shell strings (no ``shell=True`` anywhere).
-* Every mutating command is displayed before it runs; dry-run prints and skips.
-* Secrets are redacted from displayed commands.
-* Confirmation is required for destructive or privileged actions unless the
-  caller passed ``--yes``; non-interactive sessions without ``--yes`` abort.
-* Structured events are appended to ``<state_dir>/logs/events.jsonl``.
-"""
+Команды задаются списками аргументов; изменяющие команды показываются заранее.
+dry-run выводит план без изменений, секреты маскируются.
+Опасные операции требуют подтверждения; события записываются в events.jsonl."""
 
 from __future__ import annotations
 
@@ -88,7 +84,7 @@ class Result:
 def probe(
     argv: Sequence[str], timeout: float = 10.0, env: Mapping[str, str] | None = None
 ) -> Result:
-    """Run a read-only command quietly. Never raises for missing executables."""
+    """Выполнить диагностическую команду без вывода и исключения при отсутствии файла."""
     argv = [str(a) for a in argv]
     try:
         cp = subprocess.run(
@@ -102,18 +98,18 @@ def probe(
         )
         return Result(argv, cp.returncode, cp.stdout, cp.stderr)
     except FileNotFoundError:
-        return Result(argv, 127, "", f"{argv[0]}: not found")
+        return Result(argv, 127, "", f"{argv[0]}: не найден")
     except PermissionError as e:
         return Result(argv, 126, "", str(e))
     except subprocess.TimeoutExpired:
-        return Result(argv, 124, "", f"timed out after {timeout}s")
+        return Result(argv, 124, "", f"превышено время ожидания: {timeout}s")
     except OSError as e:
         return Result(argv, 1, "", str(e))
 
 
 @dataclass
 class Runner:
-    """Executes plans. Holds the global --dry-run / --yes / --json switches."""
+    """Выполнять планы с учётом общих флагов --dry-run, --yes и --json."""
 
     dry_run: bool = False
     assume_yes: bool = False
@@ -122,33 +118,33 @@ class Runner:
     log_dir: Path | None = None
     interactive: bool = field(default_factory=lambda: sys.stdin.isatty())
 
-    # ----------------------------------------------------------------- output
+    # ----------------------------------------------------------------- вывод
     def info(self, msg: str) -> None:
         (err_console if self.json_mode else console).print(msg)
 
     def warn(self, msg: str) -> None:
-        err_console.print(f"[yellow]warning:[/] {msg}")
+        err_console.print(f"[yellow]внимание:[/] {msg}")
 
     def show_command(self, argv: Sequence[str], cwd: Path | None = None) -> None:
         prefix = "[dim](dry-run)[/] " if self.dry_run else ""
-        where = f" [dim](in {cwd})[/]" if cwd else ""
+        where = f" [dim](в {cwd})[/]" if cwd else ""
         (err_console if self.json_mode else console).print(
             f"{prefix}[bold cyan]$[/] {format_argv(argv)}{where}", markup=True, soft_wrap=True
         )
 
-    # ----------------------------------------------------------- confirmation
+    # ----------------------------------------------------------- подтверждение
     def confirm(self, question: str, *, default: bool = False, destructive: bool = False) -> bool:
         if self.assume_yes:
             return True
         if self.dry_run:
-            self.info(f"[dim](dry-run) would ask:[/] {question}")
+            self.info(f"[dim](dry-run) потребуется подтверждение:[/] {question}")
             return True
         if not self.interactive:
             raise AbortedError(
-                f"confirmation required: {question}",
-                hint="re-run with --yes (make ... YES=1) to approve non-interactively",
+                f"требуется подтверждение: {question}",
+                hint="для выполнения без интерактивного запроса повторите команду с YES=1",
             )
-        suffix = " [y/N] " if not default else " [Y/n] "
+        suffix = " [д/Н] " if not default else " [Д/н] "
         style = "bold red" if destructive else "bold"
         console.print(f"[{style}]{question}[/]{suffix}", end="")
         try:
@@ -157,13 +153,13 @@ class Runner:
             answer = ""
         if not answer:
             return default
-        return answer in ("y", "yes")
+        return answer in ("y", "yes", "д", "да")
 
     def require_confirmation(self, question: str, *, destructive: bool = False) -> None:
         if not self.confirm(question, destructive=destructive):
-            raise AbortedError("aborted by user")
+            raise AbortedError("отменено пользователем")
 
-    # -------------------------------------------------------------- execution
+    # -------------------------------------------------------------- выполнение
     def run(
         self,
         argv: Sequence[str],
@@ -177,15 +173,15 @@ class Runner:
     ) -> Result:
         argv = [str(a) for a in argv]
         if not argv:
-            raise SetupWorkError("empty command")
+            raise SetupWorkError("пустая команда")
         if mutating or self.verbose:
             self.show_command(argv, cwd)
         if mutating and self.dry_run:
             return Result(argv, 0, skipped=True)
         if shutil.which(argv[0]) is None and not Path(argv[0]).is_file():
             raise MissingDependencyError(
-                f"{argv[0]} is not installed or not on PATH",
-                hint="run `make doctor` to see what is missing",
+                f"{argv[0]} не установлен или отсутствует в PATH",
+                hint="выполните make doctor, чтобы проверить недостающие инструменты",
             )
         full_env = None
         if env is not None:
@@ -204,7 +200,9 @@ class Runner:
             )
         except subprocess.TimeoutExpired as e:
             self.event("command.timeout", argv=redact_argv(argv), timeout=timeout)
-            raise SetupWorkError(f"command timed out after {timeout}s: {format_argv(argv)}") from e
+            raise SetupWorkError(
+                f"команда превысила время ожидания: {timeout}s: {format_argv(argv)}"
+            ) from e
         except KeyboardInterrupt:
             self.event("command.interrupted", argv=redact_argv(argv))
             raise
@@ -213,12 +211,12 @@ class Runner:
         if check and not res.ok:
             detail = (res.stderr or res.stdout).strip().splitlines()[-5:] if capture else []
             raise SetupWorkError(
-                f"command failed with exit code {res.returncode}: {format_argv(argv)}"
+                f"команда завершилась с кодом {res.returncode}: {format_argv(argv)}"
                 + ("\n" + "\n".join(detail) if detail else "")
             )
         return res
 
-    # ---------------------------------------------------------------- logging
+    # ---------------------------------------------------------------- журналирование
     def event(self, event_name: str, /, **fields: Any) -> None:
         if self.log_dir is None or self.dry_run:
             return
@@ -232,6 +230,6 @@ class Runner:
 
 
 def emit_json(data: Any) -> None:
-    """Write machine-readable output to stdout (and nothing else)."""
+    """Вывести только машинно-читаемый результат в stdout."""
     sys.stdout.write(json.dumps(data, indent=2, default=str) + "\n")
     sys.stdout.flush()

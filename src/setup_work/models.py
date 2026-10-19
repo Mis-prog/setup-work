@@ -1,20 +1,9 @@
-"""Model catalog access and the recommendation engine.
+"""Каталог моделей и подбор под оборудование.
 
-The recommender is deterministic and explainable. For every (model, engine) pair:
-
-1. workload and context filters (``context <= native context``),
-2. per-variant engine compatibility (OS, accelerator, compute capability, kernels),
-3. per-variant memory fit (weights + KV cache + overhead vs. per-device budgets,
-   tensor-parallel and offload layouts),
-4. among variants that are compatible *and* fit, the best scoring one is kept.
-
-Compatibility decides *whether* a candidate is shown; quality decides the order:
-
-    score = quality[task] x quant_retention x confidence_factor x layout_factor
-
-Everything that was rejected keeps its reasons so `recommend --explain` can show
-why a model did not make the list.
-"""
+Для каждой пары модель/движок проверяются задача, контекст, совместимость,
+память и размещение по устройствам. Подходящие варианты ранжируются по
+качеству, квантованию, уверенности оценки и способу размещения.
+Причины отказа сохраняются для recommend --explain."""
 
 from __future__ import annotations
 
@@ -36,7 +25,7 @@ def layout_factor(plan: FitPlan, model: ModelSpec, hw: HardwareInfo) -> float:
         return 1.0
     if plan.layout == "partial-offload":
         return 0.55
-    # CPU: decode speed scales with *active* parameters read per token.
+    # CPU: скорость зависит от активных параметров, читаемых для каждого токена.
     active = model.effective_active_b
     if active <= 4:
         return 0.7
@@ -67,9 +56,9 @@ def resolve(cfg: Config, ref: str) -> tuple[ModelSpec, Variant | None]:
     if r.model_id not in models:
         close = [m for m in models if r.model_id.lower() in m]
         raise NotFoundError(
-            f"model {r.model_id!r} is not in the catalog",
-            hint=(f"did you mean: {', '.join(close[:5])}? " if close else "")
-            + "run `make models` to list catalog ids",
+            f"model {r.model_id!r} отсутствует в каталоге config/models.yaml",
+            hint=(f"возможно, вы имели в виду: {', '.join(close[:5])}? " if close else "")
+            + "выполните make models для просмотра идентификаторов",
         )
     spec = models[r.model_id]
     if r.variant_id is None:
@@ -77,8 +66,8 @@ def resolve(cfg: Config, ref: str) -> tuple[ModelSpec, Variant | None]:
     v = spec.variant(r.variant_id)
     if v is None:
         raise NotFoundError(
-            f"model {r.model_id} has no variant {r.variant_id!r}",
-            hint=f"available variants: {', '.join(x.id for x in spec.variants)}",
+            f"model {r.model_id} не имеет варианта {r.variant_id!r}",
+            hint=f"доступные варианты: {', '.join(x.id for x in spec.variants)}",
         )
     return spec, v
 
@@ -209,8 +198,8 @@ def evaluate_variant(
     rationale = [
         f"{model.architecture}"
         + (
-            f", {model.parameters_b:g}B total / {model.active_parameters_b:g}B active parameters "
-            "(all experts are stored in memory)"
+            f", {model.parameters_b:g}B всего / {model.active_parameters_b:g}B active parameters "
+            "(в памяти хранятся все эксперты)"
             if model.architecture == "moe"
             else f", {model.parameters_b:g}B parameters"
         ),
@@ -257,8 +246,8 @@ def evaluate_variant(
 def recommend(cfg: Config, hw: HardwareInfo, req: RecommendRequest) -> RecommendResult:
     if req.task not in ("general", "coding", "reasoning", "agents", "embedding"):
         raise UsageError(
-            f"unknown task {req.task!r}",
-            hint="use one of: general, coding, reasoning, agents, embedding",
+            f"неизвестная задача {req.task!r}",
+            hint="выберите general, coding, reasoning, agents или embedding",
         )
     engines = [get_engine(req.engine).name] if req.engine else list(ENGINES)
     candidates: list[Candidate] = []
@@ -274,7 +263,9 @@ def recommend(cfg: Config, hw: HardwareInfo, req: RecommendRequest) -> Recommend
         for engine_name in engines:
             variants = [v for v in model.variants if engine_name in v.engines]
             if not variants:
-                rejections.append(Rejection(model_id, engine_name, ["no artifact for this engine"]))
+                rejections.append(
+                    Rejection(model_id, engine_name, ["нет артефакта для этого движка"])
+                )
                 continue
             if req.context > model.context_length:
                 rejections.append(
@@ -282,8 +273,8 @@ def recommend(cfg: Config, hw: HardwareInfo, req: RecommendRequest) -> Recommend
                         model_id,
                         engine_name,
                         [
-                            f"requested context {req.context} exceeds native context "
-                            f"{model.context_length} (RoPE scaling is not configured by setup-work)"
+                            f"запрошенный контекст {req.context} превышает поддерживаемый контекст "
+                            f"{model.context_length} (масштабирование RoPE не настроено)"
                         ],
                     )
                 )
@@ -300,9 +291,7 @@ def recommend(cfg: Config, hw: HardwareInfo, req: RecommendRequest) -> Recommend
                     best = cand
             if best:
                 if req.task not in model.workloads:
-                    best.warnings.append(
-                        f"not tuned for '{req.task}'; listed by quality score only"
-                    )
+                    best.warnings.append(f"нет оценки для '{req.task}'; порядок по качеству")
                 candidates.append(best)
             else:
                 rejections.append(Rejection(model_id, engine_name, why))

@@ -1,3 +1,3 @@
-"""setup-work: portable bootstrapper for AI/ML development environments."""
+"""setup-work: переносимая настройка рабочего места для AI/ML."""
 
 __version__ = "4.2.0"

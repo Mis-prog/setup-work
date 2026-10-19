@@ -1,27 +1,28 @@
-# Coding-agent harness recipes.
+# Харнессы: внутренние репозитории Bitbucket и пакеты корпоративных PyPI/npm.
+# Редактируйте прямо здесь. Для git-рецептов замените CHANGE-ME в repository/ref.
+# repository — HTTPS-ссылка Clone: https://<host>/scm/<PROJECT>/<repo>.git.
+# ref — ваш тег или SHA коммита; токены в URL и YAML не вставляются.
+# Git использует ваш credential helper. Хост добавляется в trusted_git_hosts
+# файла config/corporate.yaml. Реестры пакетов задаются в config/bootstrap.env.
 #
-# Package names, binaries and runtime requirements were verified against the npm
-# registry / PyPI and the official repositories on 2026-10-15. Versions are pinned;
-# bump them with `make harness-update NAME=<name> VERSION=<version>` or override the
-# recipe in ~/.config/setup-work/harnesses.yaml.
+# qwen-code, opencode, pi, hermes, deepseek и skillhub ниже берутся из Bitbucket.
+# claude-code, codex и aider сохранены как пакеты корпоративных npm/PyPI.
+# Команды сборки и пути бинарников git-рецептов — заготовки из examples/corp:
+# сверьте их со структурой ваших внутренних форков.
+# Для opencode из этого рецепта отдельно нужен bun, bootstrap его не устанавливает.
+# Для Python-рецептов ниже нужен установленный Python 3.12.
 #
-# Recipe schema (see examples/corp/harnesses.yaml for git examples):
-#   source:      npm | pypi | git | local
-#   package:     package name (npm / pypi)
-#   version:     exact version (npm / pypi). "latest" is allowed but reported as unpinned.
-#   repository:  git URL (git). HTTPS or SSH; existing git credentials are used.
-#   ref:         branch, tag or commit (git)
-#   path:        directory (local)
-#   install:
-#     method:    npm | uv | none      (how to install a git/local checkout)
-#     python:    Python version for uv-managed environments
-#     build:     optional argv run inside the checkout (requires --allow-build)
-#   binaries:    executables to link into bin_dir
-#   requires:    runtime requirements, e.g. {node: ">=22"}
-#   environment:
-#     required:  variables that must be set before use (names only, never values)
-#     optional:  variables the harness understands
-#   verify:      argv used by `harness-doctor` to check the installation
+# Проверка плана после заполнения параметров моделей:
+#   make harness-install NAME=qwen-code DRY_RUN=1
+# Установка:
+#   make harness-install NAME=qwen-code
+#   make harness-doctor NAME=qwen-code
+#
+# Основные поля:
+# source: npm | pypi | git | local
+# install.method: npm | uv | none
+# install.build: список команд в виде argv
+# binaries: имена или {name, path, interpreter}; path относительно checkout
 
 harnesses:
   claude-code:
@@ -46,33 +47,110 @@ harnesses:
       optional: [OPENAI_API_KEY, OPENAI_BASE_URL]
     verify: [codex, --version]
 
+  # Исходный проект: QwenLM/qwen-code — рабочие пространства npm, bin scripts/cli-entry.js, Node >= 22.
   qwen-code:
-    description: Qwen Code agentic coding CLI (works with any OpenAI-compatible endpoint)
-    source: npm
-    package: "@qwen-code/qwen-code"
-    version: 0.24.7
-    binaries: [qwen]
+    description: Qwen Code (внутренний форк)
+    source: git
+    repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/qwen-code.git
+    ref: CHANGE-ME          # тег или SHA коммита
+    install:
+      method: none
+      build:
+        - [npm, ci]
+        - [npm, run, build]
+    binaries:
+      - {name: qwen, path: scripts/cli-entry.js, interpreter: node}
     requires: {node: ">=22"}
     environment:
-      optional: [OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL]
+      optional: [OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL]
     verify: [qwen, --version]
 
+  # Исходный проект: anomalyco/opencode — монорепозиторий Bun, CLI: packages/cli/src/index.ts.
   opencode:
-    description: OpenCode terminal coding agent
-    source: npm
-    package: opencode-ai
-    version: 1.18.33
-    binaries: [opencode]
+    description: OpenCode (внутренний форк)
+    source: git
+    repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/opencode.git
+    ref: CHANGE-ME
+    install:
+      method: none
+      build:
+        - [bun, install, --frozen-lockfile]
+    binaries:
+      - {name: opencode, path: packages/cli/src/index.ts, interpreter: bun}
+    requires_commands: [bun]
     environment:
-      optional: [OPENAI_API_KEY, ANTHROPIC_API_KEY]
+      optional: [OPENAI_BASE_URL, OPENAI_API_KEY]
     verify: [opencode, --version]
+
+  # Исходный проект: badlogic/pi-mono — рабочие пространства npm, bin packages/coding-agent/dist/bundle/cli.js,
+  # Node >= 22.19.
+  pi:
+    description: pi coding agent (внутренний форк)
+    source: git
+    repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/pi-mono.git
+    ref: CHANGE-ME
+    install:
+      method: none
+      build:
+        - [npm, ci]
+        - [npm, run, build]
+    binaries:
+      - {name: pi, path: packages/coding-agent/dist/bundle/cli.js, interpreter: node}
+    requires: {node: ">=22.19"}
+    verify: [pi, --version]
+
+  # Исходный проект: NousResearch/hermes-agent — Python (>=3.11,<3.15), команда запуска `hermes`.
+  hermes:
+    description: Hermes Agent (внутренний форк)
+    source: git
+    repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/hermes-agent.git
+    ref: CHANGE-ME
+    install:
+      method: uv            # отдельный venv, пакеты из корпоративного PyPI
+      python: "3.12"
+    binaries: [hermes]
+    environment:
+      optional: [OPENAI_BASE_URL, OPENAI_API_KEY]
+    verify: [hermes, --help]
+
+  # deepseek: внутренний харнес. Заполните под ваш проект — ниже два типичных варианта.
+  deepseek:
+    description: DeepSeek coding agent (внутренний)
+    source: git
+    repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/deepseek-agent.git
+    ref: CHANGE-ME
+    # Вариант A — Python-пакет с команда запуска:
+    install: {method: uv, python: "3.12"}
+    binaries: [deepseek]
+    # Вариант B — Node/TypeScript:
+    # install:
+    #   method: none
+    #   build: [[npm, ci], [npm, run, build]]
+    # binaries:
+    #   - {name: deepseek, path: dist/cli.js, interpreter: node}
+    environment:
+      optional: [DEEPSEEK_BASE_URL, OPENAI_BASE_URL, OPENAI_API_KEY]
+    verify: [deepseek, --help]
+
+  # skillhub: внутренний репозиторий навыков (skills) для агентов. Пока только
+  # клонируется на зафиксированный ref в <data>/harnesses/skillhub/src; как раскладывать
+  # навыки по агентам — добавим, когда будет понятна структура репозитория.
+  #   make harness-install NAME=skillhub
+  #   make harness-update  NAME=skillhub REF=<новый тег или commit>
+  skillhub:
+    description: SkillHub (внутренний репозиторий навыков)
+    source: git
+    repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/skillhub.git
+    ref: CHANGE-ME          # тег или SHA коммита
+    install:
+      method: none          # ничего не собирается, только checkout
 
   aider:
     description: Aider AI pair programming in the terminal
     source: pypi
     package: aider-chat
     version: 0.86.2
-    # aider-chat 0.86.2 declares requires-python >=3.10,<3.13
+    # aider-chat 0.86.2 требует Python >=3.10,<3.13
     install: {method: uv, python: "3.12"}
     binaries: [aider]
     environment:

@@ -1,4 +1,4 @@
-"""Software environment detection: tools and versions."""
+"""Определение установленных инструментов и их версий."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def parse_version(text: str) -> tuple[int, ...] | None:
 
 
 def version_satisfies(found: str | None, spec: str) -> bool:
-    """Minimal comparator for specs like '>=22', '>=3.11'."""
+    """Сравнить версию с требованием вида >=22 или >=3.11."""
     if not found:
         return False
     v = parse_version(found)
@@ -50,7 +50,7 @@ class ToolStatus:
     installed: bool
     version: str | None = None
     path: str | None = None
-    managed: bool = False  # installed by setup-work into data_dir
+    managed: bool = False  # установлено setup-work в data_dir
     satisfies: bool | None = None
     note: str | None = None
 
@@ -58,7 +58,7 @@ class ToolStatus:
         return asdict(self)
 
 
-# name -> (executable, version argv, minimum)
+# имя → исполняемый файл, аргументы версии, минимальная версия
 TOOL_PROBES: dict[str, tuple[str, list[str], str | None]] = {
     "python": ("python3", ["python3", "--version"], ">=3.11"),
     "uv": ("uv", ["uv", "--version"], None),
@@ -74,7 +74,7 @@ def detect_tool(name: str, cfg: Config | None = None) -> ToolStatus:
     extra = [cfg.bin_dir] if cfg else []
     path = which(exe, extra)
     if name == "python" and cfg is not None:
-        # uv-managed interpreters are acceptable even if python3 on PATH is old.
+        # Интерпретатор uv подходит, даже если python3 в PATH старой версии.
         uv = which("uv", extra)
         if uv:
             res = probe([uv, "python", "find", ">=3.11"], timeout=15)
@@ -88,7 +88,7 @@ def detect_tool(name: str, cfg: Config | None = None) -> ToolStatus:
                     _clean(v),
                     p,
                     satisfies=version_satisfies(v, ">=3.11"),
-                    note="uv-managed or discovered by uv" if p != path else None,
+                    note="управляется или найден через uv" if p != path else None,
                 )
     if not path:
         return ToolStatus(name, False)
@@ -165,5 +165,5 @@ def _same(a: Path, b: Path) -> bool:
 
 
 def _mask_url(v: str) -> str:
-    """Hide credentials in proxy URLs (http://user:pass@host)."""
+    """Скрыть учётные данные в URL прокси."""
     return re.sub(r"//[^/@]+@", "//***@", v)

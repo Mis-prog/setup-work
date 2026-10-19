@@ -1,12 +1,8 @@
-"""Model storage: weights come from corporate artifacts only.
+"""Хранение моделей из корпоративных артефактов.
 
-* A variant's artifact is taken from ``corporate.models`` (``"<id>:<variant>"``) or
-  from the variant's own ``source:``; see ``artifacts.py`` for HDFS, local/NFS
-  paths and HTTPS.
-* Archives are unpacked into ``<models_dir>/<id>/<variant>`` and marked, so re-runs
-  reuse them.
-* Nothing in this module is called by ``doctor`` or ``recommend``.
-"""
+Источник выбирается из corporate.models или source варианта. Архивы
+распаковываются в <models_dir>/<id>/<variant> и помечаются для повторного
+использования. doctor и recommend не загружают модели."""
 
 from __future__ import annotations
 
@@ -24,15 +20,15 @@ def require_artifact(cfg: Config, model_id: str, variant: Variant) -> ArtifactRe
     ref = model_artifact(cfg, model_id, variant)
     if ref is None:
         raise NotFoundError(
-            f"{model_id}:{variant.id} has no artifact source",
-            hint=f'map "{model_id}:{variant.id}" in corporate.yaml (models:) or give the '
-            "variant a `source:`",
+            f"{model_id}:{variant.id} не имеет источника артефакта",
+            hint=f'добавьте "{model_id}:{variant.id}" в models файла corporate.yaml либо задайте '
+            "source варианта в models.yaml",
         )
     return ref
 
 
 def model_artifact(cfg: Config, model_id: str, variant: Variant) -> ArtifactRef | None:
-    """Artifact source for a variant: corporate.models mapping first, then `source:`."""
+    """Источник варианта: сначала corporate.models, затем source."""
     ref = cfg.corporate.models.get(f"{model_id}:{variant.id}")
     if ref is not None:
         return ref
@@ -46,7 +42,7 @@ def artifact_model_dir(cfg: Config, model_id: str, variant: Variant) -> Path:
 
 
 def model_root(root: Path, variant: Variant) -> Path:
-    """Directory/file the engine should load from an unpacked artifact."""
+    """Каталог или файл распакованной модели для загрузки движком."""
     if variant.format == "gguf":
         return gguf_entry_file(root, variant)
     configs = sorted(root.rglob("config.json"), key=lambda p: (len(p.parts), str(p)))
@@ -54,13 +50,13 @@ def model_root(root: Path, variant: Variant) -> Path:
         if any(c.parent.glob("*.safetensors")):
             return c.parent
     raise NotFoundError(
-        f"no model directory (config.json + *.safetensors) found in {root}",
-        hint="the archive must contain a model directory (config.json + *.safetensors)",
+        f"не найден каталог модели с config.json и *.safetensors в {root}",
+        hint="проверьте ZIP: внутри нужен каталог с config.json, *.safetensors и токенизатором",
     )
 
 
 def local_model(cfg: Config, model_id: str, variant: Variant) -> Path | None:
-    """Local path to load (GGUF entry file or model dir) of an unpacked artifact."""
+    """Локальный путь модели: файл GGUF или каталог весов."""
     from .artifacts import read_marker
 
     adir = artifact_model_dir(cfg, model_id, variant)
@@ -81,8 +77,8 @@ def pull_artifact(
     artifacts.install(cfg, ref, dest, runner, name=f"{model_id}:{variant.id}")
     if runner.dry_run:
         return dest
-    entry = model_root(dest, variant)  # validates the archive content
-    runner.info(f"  model entry point: {entry}")
+    entry = model_root(dest, variant)  # проверка содержимого архива
+    runner.info(f"  путь модели для запуска: {entry}")
     return entry
 
 
@@ -112,14 +108,14 @@ def list_artifact_models(cfg: Config) -> list[dict[str, Any]]:
 
 
 def remove_artifact_model(cfg: Config, ref: str, runner: Runner) -> int | None:
-    """Remove an unpacked artifact model. Returns freed bytes, or None if not present."""
+    """Удалить модель и вернуть объём освобождённой памяти; None, если модели нет."""
     mid, _, vid = ref.partition(":")
     vdir = cfg.models_dir / mid / vid
     if not vid or not (vdir / ".setup-work-artifact.json").exists():
         return None
     size = sum(f.stat().st_size for f in vdir.rglob("*") if f.is_file())
-    runner.info(f"Will delete [bold]{vdir}[/] ({gib(size)})")
-    runner.require_confirmation(f"Delete unpacked model {ref}?", destructive=True)
+    runner.info(f"Будет удалено [bold]{vdir}[/] ({gib(size)})")
+    runner.require_confirmation(f"Удалить распакованную модель {ref}?", destructive=True)
     if not runner.dry_run:
         shutil.rmtree(vdir)
         runner.event("model.remove", ref=ref, bytes=size)
@@ -127,26 +123,26 @@ def remove_artifact_model(cfg: Config, ref: str, runner: Runner) -> int | None:
 
 
 def gguf_entry_file(snapshot: Path, variant: Variant) -> Path:
-    """The file to hand to llama.cpp: the only file, or shard 00001 of a split model.
+    """Найти GGUF или первый шард модели.
 
-    Searches recursively (archives often contain a top-level directory). If the
-    catalog patterns do not match (internally renamed files), a single GGUF model
-    in the directory is accepted; multimodal projectors (mmproj*) are ignored.
-    """
+    Поиск рекурсивный; при несовпадении шаблона допускается единственная модель.
+    Проекторы mmproj* не считаются самостоятельной моделью."""
     matches = sorted({p for pat in variant.files or [] for p in snapshot.rglob(pat)})
     if not matches:
         matches = sorted(p for p in snapshot.rglob("*.gguf") if not p.name.startswith("mmproj"))
     if not matches:
-        raise NotFoundError(f"no GGUF files matching {variant.files} in {snapshot}")
+        raise NotFoundError(f"не найдены файлы GGUF по шаблону {variant.files} in {snapshot}")
     shards = [p for p in matches if "-00001-of-" in p.name]
     if shards:
         expected = int(shards[0].name.split("-of-")[1].split(".")[0])
         if len([p for p in matches if "-of-" in p.name]) < expected:
             raise SetupWorkError(
-                f"split GGUF is incomplete: {len(matches)}/{expected} shards present",
-                hint="re-run make model-pull to finish the download",
+                f"отсутствуют части GGUF: {len(matches)}/{expected} частей найдено",
+                hint="проверьте комплект шардов в архиве и повторите make model-pull",
             )
         return shards[0]
     if len(matches) > 1:
-        raise UsageError(f"ambiguous GGUF files {[p.name for p in matches]}; narrow `files`")
+        raise UsageError(
+            f"несколько GGUF: {[p.name for p in matches]}; уточните files в models.yaml"
+        )
     return matches[0]

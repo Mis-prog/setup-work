@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
-"""Join a multi-part zip (.zip, .z01, .z02, ..., .z11, ...) into one file.
+"""Объединение частей ZIP (.zip, .z01, .z02 и далее) в один файл.
 
-Parts are found by a common name prefix, so names may differ after it (e.g. a hash):
-Qwen3.8-Flash-3f9a1c.zip, Qwen3.8-Flash-77b2e0.z01, Qwen3.8-Flash-c41d08.z02, ...
+Части ищутся по общему префиксу имени и сортируются по числовому суффиксу.
+По умолчанию .zip идёт первым; --zip-last перемещает его в конец.
+До подтверждения выводится только план. Данные копируются потоком.
 
-Parts are ordered numerically (.z02 before .z11, .z99 before .z100); name.zip goes
-first unless --zip-last is given. The plan is shown and nothing is written until it is
-confirmed. Stdlib only, streams data, so it works on large files.
+Примеры:
+    python3 scripts/join_zip.py /data/Qwen3.8-Flash
+    python3 scripts/join_zip.py /data/name.zip
+    make zip-join ZIP=/data/Qwen3.8-Flash [OUT=...] [ZIP_LAST=1]
 
-Usage:
-    python3 scripts/join_zip.py /data/Qwen3.8-Flash   # prefix -> /data/Qwen3.8-Flash.joined.zip
-    python3 scripts/join_zip.py /data/name.zip        # parts named name.zNN
-    python3 scripts/join_zip.py /data/dir             # the dir holds exactly one set of parts
-    make zip-join ZIP=/data/Qwen3.8-Flash [OUT=...] [ZIP_LAST=1] [DRY_RUN=1] [YES=1] [FORCE=1]
-
-The output goes next to the parts as <prefix>.joined.zip unless -o/OUT is given.
-
---yes/--dry-run/--force default to SETUP_WORK_YES/_DRY_RUN/_FORCE (set by make).
-"""
+Без OUT результат записывается рядом с частями как <префикс>.joined.zip.
+Параметры --yes/--dry-run/--force учитывают SETUP_WORK_YES/_DRY_RUN/_FORCE."""
 
 from __future__ import annotations
 
@@ -33,22 +27,19 @@ PART_RE = re.compile(r"\.z(\d+)$", re.IGNORECASE)
 
 
 def find_parts(target: Path, zip_last: bool) -> tuple[list[Path], str]:
-    """Return the parts in join order and a base name for the output file.
+    """Найти части в порядке объединения и базовое имя результата.
 
-    target is a directory (every part in it), a .zip file (parts named <stem>.zNN) or a
-    name prefix such as /data/Qwen3.8-Flash (every .zip/.zNN starting with it, whatever
-    follows: Qwen3.8-Flash-3f9a1c.zip, Qwen3.8-Flash-77b2e0.z01, ...).
-    """
+    Допускаются каталог, файл .zip или общий префикс имён частей."""
     if target.is_dir():
         folder, prefix = target, ""
     elif target.suffix.lower() == ".zip":
         if not target.is_file():
-            sys.exit(f"error: {target} not found")
+            sys.exit(f"ошибка: {target} не найден; проверьте ZIP")
         folder, prefix = target.parent, target.stem + "."
     else:
         folder, prefix = target.parent, target.name
     if not folder.is_dir():
-        sys.exit(f"error: folder {folder} not found")
+        sys.exit(f"ошибка: каталог {folder} не найден; проверьте ZIP")
 
     heads: list[Path] = []
     numbered: dict[int, list[Path]] = {}
@@ -64,15 +55,15 @@ def find_parts(target: Path, zip_last: bool) -> tuple[list[Path], str]:
 
     where = f"{folder}/{prefix}*" if prefix else str(folder)
     if len(heads) != 1:
-        found = ", ".join(p.name for p in heads) or "none"
-        sys.exit(f"error: expected one .zip in {where}, found: {found} (narrow the prefix)")
+        found = ", ".join(p.name for p in heads) or "нет"
+        sys.exit(f"ошибка: в {where} нужен один .zip; найдено: {found}; уточните префикс ZIP")
     dupes = {n: ps for n, ps in numbered.items() if len(ps) > 1}
     if dupes:
         lines = "; ".join(f"z{n:02d}: " + ", ".join(p.name for p in ps) for n, ps in dupes.items())
-        sys.exit(f"error: several files claim the same part number: {lines}")
+        sys.exit(f"ошибка: несколько файлов с одинаковым номером части: {lines}")
     missing = sorted(set(range(1, max(numbered, default=0) + 1)) - set(numbered))
     if missing:
-        sys.exit("error: missing parts: " + ", ".join(f".z{n:02d}" for n in missing))
+        sys.exit("ошибка: отсутствуют части: " + ", ".join(f".z{n:02d}" for n in missing))
 
     head = heads[0]
     rest = [numbered[n][0] for n in sorted(numbered)]
@@ -86,12 +77,12 @@ def env_flag(name: str) -> bool:
 
 def confirm(question: str) -> bool:
     if not sys.stdin.isatty():
-        sys.exit(f"error: confirmation required: {question} (re-run with --yes or YES=1)")
+        sys.exit(f"ошибка: требуется подтверждение: {question}; повторите с YES=1")
     try:
-        answer = input(f"{question} [y/N] ")
+        answer = input(f"{question} [д/Н] ")
     except EOFError:
         answer = ""
-    return answer.strip().lower() in ("y", "yes")
+    return answer.strip().lower() in ("y", "yes", "д", "да")
 
 
 def join(parts: list[Path], out: Path) -> int:
@@ -112,12 +103,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("target", type=Path, help="name prefix, the .zip part or a directory")
-    ap.add_argument("-o", "--output", type=Path, help="output file (default: <prefix>.joined.zip)")
-    ap.add_argument("--zip-last", action="store_true", help="put name.zip after the .zNN parts")
-    ap.add_argument("--force", action="store_true", help="overwrite the output file")
-    ap.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
-    ap.add_argument("--dry-run", action="store_true", help="only show the plan")
+    ap.add_argument("target", type=Path, help="префикс имени, часть .zip либо каталог")
+    ap.add_argument(
+        "-o", "--output", type=Path, help="файл результата; по умолчанию рядом с частями"
+    )
+    ap.add_argument("--zip-last", action="store_true", help="поместить .zip после частей .zNN")
+    ap.add_argument("--force", action="store_true", help="перезаписать файл результата")
+    ap.add_argument("-y", "--yes", action="store_true", help="не запрашивать подтверждение")
+    ap.add_argument("--dry-run", action="store_true", help="только показать план")
     args = ap.parse_args()
     args.yes = args.yes or env_flag("SETUP_WORK_YES")
     args.dry_run = args.dry_run or env_flag("SETUP_WORK_DRY_RUN")
@@ -126,28 +119,28 @@ def main() -> None:
     parts, base = find_parts(args.target, args.zip_last)
     out = args.output or parts[0].with_name(base + ".joined.zip")
     if out.resolve() in {p.resolve() for p in parts}:
-        sys.exit(f"error: output {out} would overwrite an input part")
+        sys.exit(f"ошибка: результат {out} перезапишет исходную часть; измените OUT")
     if out.exists() and not args.force:
-        sys.exit(f"error: {out} exists (use --force to overwrite)")
+        sys.exit(f"ошибка: {out} уже существует; для перезаписи укажите FORCE=1")
 
     total = sum(p.stat().st_size for p in parts)
-    print(f"{len(parts)} part(s), {total / 2**30:.2f} GiB, in this order:")
+    print(f"{len(parts)} частей, {total / 2**30:.2f} GiB, порядок:")
     for i, p in enumerate(parts, 1):
         print(f"  {i:3d}. {p.name} ({p.stat().st_size / 2**20:.1f} MiB)")
-    print(f"output: {out}" + (" (overwrite)" if out.exists() else ""))
+    print(f"результат: {out}" + (" (перезапись)" if out.exists() else ""))
     free = shutil.disk_usage(out.resolve().parent).free
     if free < total:
-        sys.exit(f"error: not enough space: need {total / 2**30:.2f} GiB, {free / 2**30:.2f} free")
+        sys.exit(f"ошибка: требуется {total / 2**30:.2f} GiB, свободно {free / 2**30:.2f} GiB")
     if args.dry_run:
-        print("dry-run: nothing written")
+        print("dry-run: файлы не изменены")
         return
-    if not args.yes and not confirm(f"Join {len(parts)} part(s) into {out}?"):
-        sys.exit("aborted, nothing written")
+    if not args.yes and not confirm(f"Объединить {len(parts)} частей в {out}?"):
+        sys.exit("отменено, файлы не изменены")
 
     total = join(parts, out)
-    print(f"done: {total / 2**30:.2f} GiB")
+    print(f"готово: {total / 2**30:.2f} GiB")
     if not zipfile.is_zipfile(out):
-        sys.exit("warning: result is not recognised as a zip archive; check the part order")
+        sys.exit("внимание: результат не распознан как ZIP; проверьте порядок частей")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,8 @@
-"""Inference orchestration: launch planning and process lifecycle.
+"""Планирование инференса и управление процессом сервера.
 
-Planning (``plan_launch``) is pure: it resolves the model, checks engine
-compatibility and memory fit, picks a free port and builds the argv. Execution
-(``ServerManager``) starts the process in its own session, records a state file,
-waits for HTTP readiness, and only ever signals processes it can prove it started
-(PID + process start time must match the state file).
-"""
+План определяет модель, проверяет совместимость и память, выбирает порт и команду.
+ServerManager запускает процесс, записывает состояние и ожидает готовности HTTP.
+Сигналы отправляются только процессам с совпавшими PID и временем запуска."""
 
 from __future__ import annotations
 
@@ -81,7 +78,7 @@ class LaunchPlan:
         }
 
 
-# --------------------------------------------------------------------------- ports
+# --------------------------------------------------------------------------- порты
 
 
 def port_in_use(host: str, port: int) -> bool:
@@ -99,10 +96,12 @@ def find_free_port(host: str, start: int, attempts: int = 50) -> int:
     for p in range(start, start + attempts):
         if not port_in_use(host, p):
             return p
-    raise SetupWorkError(f"no free port in {start}-{start + attempts - 1} on {host}")
+    raise SetupWorkError(
+        f"нет свободного порта в диапазоне {start}-{start + attempts - 1} on {host}"
+    )
 
 
-# ------------------------------------------------------------------------ planning
+# ------------------------------------------------------------------------ планирование
 
 
 def _pick_variant(
@@ -136,10 +135,10 @@ def _pick_variant(
                 best = (cand, v, e)
     if best is None:
         raise UnsupportedError(
-            f"no variant of {model_id} is compatible with and fits on this machine "
-            f"at context {ctx}",
-            hint="\n  ".join(["reasons:", *reasons[-8:]])
-            + "\n  try a smaller CONTEXT, another MODEL, or `make recommend`",
+            f"ни один вариант {model_id} не совместим или не помещается в память "
+            f"при контексте {ctx}",
+            hint="\n  ".join(["причины:", *reasons[-8:]])
+            + "\n  уменьшите CONTEXT, выберите другую MODEL либо выполните make recommend",
         )
     return best[1], best[2], best[0].rationale
 
@@ -164,19 +163,18 @@ def plan_launch(
         if path.is_file() and path.suffix == ".gguf":
             engine_name = get_engine(opts.engine or "llama.cpp").name
             if engine_name != "llama.cpp":
-                raise UsageError("GGUF files are served with ENGINE=llama.cpp")
+                raise UsageError("для файлов GGUF укажите ENGINE=llama.cpp")
         elif path.is_dir():
             engine_name = get_engine(opts.engine or "vllm").name
         else:
-            raise UsageError(f"{path} is neither a .gguf file nor a model directory")
+            raise UsageError(f"{path} не является файлом .gguf или каталогом модели")
         model_path = str(path.resolve())
         served = served or path.stem
-        warnings.append("local model outside the catalog: memory fit is not pre-checked")
+        warnings.append("локальная модель вне каталога: память перед запуском не оценивается")
     elif "/" in model_ref and ":" not in model_ref:
         raise NotFoundError(
-            f"{model_ref} does not exist",
-            hint="pass a catalog ref (MODEL=<id>:<variant>), a local .gguf file "
-            "or a model directory",
+            f"{model_ref} не существует; проверьте MODEL",
+            hint="укажите MODEL=идентификатор:вариант, локальный файл .gguf или каталог модели",
         )
     else:
         model_id = model_ref.split(":")[0]
@@ -185,14 +183,14 @@ def plan_launch(
             variant, engine_name, rationale = _pick_variant(
                 cfg, model_id, spec, opts.engine, hw, ctx, opts
             )
-            rationale.insert(0, f"auto-selected variant {variant.id} for {engine_name}")
+            rationale.insert(0, f"автоматически выбран вариант {variant.id} для {engine_name}")
         else:
             engine_name = get_engine(opts.engine).name if opts.engine else variant.engines[0]
             if engine_name not in variant.engines:
                 raise UsageError(
-                    f"variant {variant.id} is packaged for {', '.join(variant.engines)}, "
-                    f"not {engine_name}",
-                    hint="pick a variant for that engine: "
+                    f"вариант {variant.id} подготовлен для {', '.join(variant.engines)}, "
+                    f"а не {engine_name}",
+                    hint="выберите вариант для этого движка: "
                     + ", ".join(
                         f"{model_id}:{v.id}" for v in spec.variants if engine_name in v.engines
                     ),
@@ -202,16 +200,16 @@ def plan_launch(
         art = hub.model_artifact(cfg, model_id, variant)
         origin = art.uri if art else variant.origin
         model_path = (
-            f"<{origin}/{first} after model-pull>"
+            f"<{origin}/{first} после model-pull>"
             if variant.format == "gguf"
-            else f"<{origin} after model-pull>"
+            else f"<{origin} после model-pull>"
         )
         local = hub.local_model(cfg, model_id, variant)
         if local is not None:
             model_path = str(local)
         elif check_cache and local is None:
             raise NotFoundError(
-                f"{model_id}:{variant.id} is not downloaded (serve never downloads implicitly)",
+                f"{model_id}:{variant.id} не загружена; serve не скачивает модели автоматически",
                 hint=f"make model-pull MODEL={model_id}:{variant.id}",
             )
 
@@ -237,17 +235,17 @@ def plan_launch(
     if spec is not None and variant is not None:
         compat = engine.compatibility(spec, variant, hw)
         if compat.level == "unsupported":
-            msg = f"{model_ref} on {engine.name}: {'; '.join(compat.reasons)}"
+            msg = f"{model_ref} через {engine.name}: {'; '.join(compat.reasons)}"
             if not opts.force:
-                raise UnsupportedError(msg, hint="pick a recommended variant (`make recommend`)")
-            warnings.append(f"FORCED: {msg}")
+                raise UnsupportedError(msg, hint="выберите подходящий вариант через make recommend")
+            warnings.append(f"ПРИНУДИТЕЛЬНО: {msg}")
         if compat.level == "experimental":
-            warnings.append(f"experimental configuration: {'; '.join(compat.reasons)}")
+            warnings.append(f"экспериментальная конфигурация: {'; '.join(compat.reasons)}")
         launch.dtype = compat.dtype
         launch.embedding = "embedding" in spec.workloads
         if ctx > spec.context_length:
             raise UsageError(
-                f"context {ctx} exceeds {spec.display_name}'s native context {spec.context_length}"
+                f"контекст {ctx} превышает лимит {spec.display_name}: {spec.context_length}"
             )
         fit = engine.fit(
             spec,
@@ -259,18 +257,22 @@ def plan_launch(
             cfg,
         )
         if not fit.fits:
-            msg = "estimated not to fit: " + "; ".join(fit.reasons)
+            msg = "по оценке недостаточно памяти: " + "; ".join(fit.reasons)
             if not opts.force:
                 raise UnsupportedError(
-                    msg, hint="lower CONTEXT / CONCURRENCY, choose a smaller variant, or FORCE=1"
+                    msg,
+                    hint=(
+                        "уменьшите CONTEXT/CONCURRENCY либо выберите "
+                        "меньший вариант; FORCE=1 пропускает проверку памяти"
+                    ),
                 )
-            warnings.append(f"FORCED: {msg}")
+            warnings.append(f"ПРИНУДИТЕЛЬНО: {msg}")
         else:
             est = fit.estimate
             if est:
                 rationale.append(
-                    f"estimated memory: weights {gib(est.weights_bytes)}, KV {gib(est.kv_bytes)}, "
-                    f"overhead {gib(est.overhead_bytes)} ({fit.layout})"
+                    f"оценка памяти: веса {gib(est.weights_bytes)}, KV {gib(est.kv_bytes)}, "
+                    f"накладные расходы {gib(est.overhead_bytes)} ({fit.layout})"
                 )
             rationale += fit.reasons
             warnings += fit.warnings
@@ -289,24 +291,20 @@ def plan_launch(
     public = not is_loopback(launch.host)
     if public:
         warnings.append(
-            f"binding to {launch.host}: the endpoint will be reachable from the network"
-            + (
-                ""
-                if os.environ.get(API_KEY_ENV)
-                else f" WITHOUT authentication (set {API_KEY_ENV})"
-            )
+            f"привязка к {launch.host}: сервер будет доступен из сети"
+            + ("" if os.environ.get(API_KEY_ENV) else f"без аутентификации (задайте {API_KEY_ENV})")
         )
     binary = engine.find_binary(cfg)
     launch.binary = binary
     if binary is None:
         warnings.append(
-            f"{engine.binary_name} not installed yet: make engine-install ENGINE={engine.name}"
+            f"{engine.binary_name} не установлен; make engine-install ENGINE={engine.name}"
         )
     argv = engine.build_command(launch, binary or engine.binary_name)
     return LaunchPlan(launch, argv, {}, binary, rationale, warnings, public)
 
 
-# ------------------------------------------------------------------------- process
+# ------------------------------------------------------------------------- процесс
 
 
 def _proc_start_time(pid: int) -> str | None:
@@ -326,7 +324,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _local_opener(url: str) -> urllib.request.OpenerDirector:
-    """Never route loopback requests through HTTP(S)_PROXY."""
+    """Не отправлять запросы к локальному серверу через HTTP(S)_PROXY."""
     host = urllib.request.urlparse(url).hostname or ""
     if is_loopback(host):
         return urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -341,9 +339,9 @@ def http_json(
     if key:
         headers["Authorization"] = f"Bearer {key}"
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(url, data=data, headers=headers)  # noqa: S310 - http(s) only
+    req = urllib.request.Request(url, data=data, headers=headers)  # noqa: S310 - допускается только HTTP(S)
     if not url.startswith(("http://", "https://")):
-        raise UsageError(f"refusing non-HTTP URL {url}")
+        raise UsageError(f"URL должен использовать HTTP(S): {url}")
     try:
         with _local_opener(url).open(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
@@ -383,10 +381,10 @@ class ServerManager:
         self.dir = cfg.state_dir / "serve"
         self.log_dir = cfg.state_dir / "logs"
 
-    # ------------------------------------------------------------- state files
+    # ------------------------------------------------------------- файлы состояния
     def _state_path(self, name: str) -> Path:
         if not name.replace("-", "").replace("_", "").isalnum():
-            raise UsageError(f"invalid server name {name!r}")
+            raise UsageError(f"неверное имя сервера {name!r}")
         return self.dir / f"{name}.json"
 
     def load(self, name: str) -> ServerState | None:
@@ -397,7 +395,8 @@ class ServerManager:
             return None
         except (ValueError, TypeError) as e:
             raise SetupWorkError(
-                f"corrupt state file {p}: {e}", hint=f"inspect and delete {p}"
+                f"повреждён файл состояния {p}: {e}",
+                hint=f"проверьте и при необходимости удалите {p}",
             ) from e
 
     def _save(self, st: ServerState) -> None:
@@ -424,13 +423,13 @@ class ServerManager:
         return out
 
     def owns(self, st: ServerState) -> bool:
-        """True only if the PID is alive *and* is the very process we started."""
+        """Проверить, что PID существует и относится именно к запущенному нами процессу."""
         if not _pid_alive(st.pid):
             return False
         current = _proc_start_time(st.pid)
         return st.proc_start is not None and current == st.proc_start
 
-    # ----------------------------------------------------------------- health
+    # ----------------------------------------------------------------- готовность
     def healthy(self, st: ServerState, timeout: float = 2.0) -> bool:
         try:
             code, _ = http_json(st.base_url + st.health_path, timeout=timeout)
@@ -441,7 +440,7 @@ class ServerManager:
         except (urllib.error.URLError, OSError, TimeoutError):
             return False
 
-    # ------------------------------------------------------------------ start
+    # ------------------------------------------------------------------ запуск
     def prepare_api_key(self, plan: LaunchPlan) -> None:
         key = os.environ.get(API_KEY_ENV)
         if not key:
@@ -462,25 +461,25 @@ class ServerManager:
         if existing:
             if self.owns(existing):
                 raise UsageError(
-                    f"server '{launch.name}' is already running (pid {existing.pid}, "
+                    f"server '{launch.name}' уже работает (PID {existing.pid}, "
                     f"{existing.base_url})",
-                    hint="make serve-stop, or use INSTANCE=<other-name> PORT=<other-port>",
+                    hint="выполните make serve-stop либо задайте другие INSTANCE и PORT",
                 )
             self._clear(launch.name)
         if not plan.binary:
             raise MissingDependencyError(
-                f"{launch.engine} server binary not found",
-                hint=f"install it with `make engine-install ENGINE={launch.engine}`",
+                f"{launch.engine} исполняемый файл сервера не найден",
+                hint=f"установите его командой `make engine-install ENGINE={launch.engine}`",
             )
         if port_in_use(launch.host, launch.port):
             raise UsageError(
-                f"port {launch.port} on {launch.host} is already in use",
-                hint="choose another port, e.g. "
+                f"порт {launch.port} на {launch.host} уже используется",
+                hint="выберите другой порт, например "
                 f"PORT={find_free_port(launch.host, launch.port + 1)}",
             )
         if plan.public:
             self.runner.require_confirmation(
-                f"Expose the inference server on {launch.host}:{launch.port}?"
+                f"Открыть сервер инференса на {launch.host}:{launch.port}?"
             )
         self.prepare_api_key(plan)
         plan.env = {**get_engine(launch.engine).build_env(launch), **plan.env}
@@ -494,10 +493,10 @@ class ServerManager:
         if launch.engine == "llama.cpp" and plan.binary:
             env.update(LlamaCppEngine.runtime_env(plan.binary))
         if launch.engine == "vllm" and Path(launch.model_path).is_dir():
-            env.setdefault("HF_HUB_OFFLINE", "1")  # weights are local: never fetch implicitly
+            env.setdefault("HF_HUB_OFFLINE", "1")  # веса локальные: не загружать неявно
         with log_path.open("ab") as log:
             log.write(
-                f"\n=== setup-work start {time.strftime('%Y-%m-%dT%H:%M:%S')} "
+                f"\n=== запуск setup-work {time.strftime('%Y-%m-%dT%H:%M:%S')} "
                 f"{format_argv(plan.argv)}\n".encode()
             )
             log.flush()
@@ -526,7 +525,7 @@ class ServerManager:
         )
         self._save(st)
         self.runner.event("serve.start", **{k: v for k, v in st.to_dict().items() if k != "argv"})
-        self.runner.info(f"started pid {proc.pid}; logs: {log_path}")
+        self.runner.info(f"запущен PID {proc.pid}; logs: {log_path}")
         if wait:
             self.wait_ready(st, proc)
         if not detach:
@@ -536,29 +535,29 @@ class ServerManager:
     def wait_ready(self, st: ServerState, proc: subprocess.Popen[bytes] | None = None) -> None:
         timeout = self.cfg.defaults.inference.ready_timeout_s
         deadline = time.monotonic() + timeout
-        self.runner.info(f"waiting for {st.base_url}{st.health_path} (timeout {timeout}s) ...")
+        self.runner.info(f"ожидание {st.base_url}{st.health_path} (ожидание {timeout} с) ...")
         while time.monotonic() < deadline:
             if proc is not None and proc.poll() is not None:
                 tail = self.tail(st.name, 25)
                 self._clear(st.name)
                 raise SetupWorkError(
-                    f"{st.engine} exited with code {proc.returncode} before becoming ready",
-                    hint="last log lines:\n" + "\n".join(tail),
+                    f"{st.engine} завершился с кодом {proc.returncode} до готовности сервера",
+                    hint="последние строки журнала:\n" + "\n".join(tail),
                 )
             if self.healthy(st):
                 self.runner.info(
-                    f"[green]ready[/] {st.base_url}/v1 (model: {st.served_model_name})"
+                    f"[green]готов[/] {st.base_url}/v1 (модель: {st.served_model_name})"
                 )
                 self.runner.event("serve.ready", name=st.name, url=st.base_url)
                 return
             time.sleep(2)
         raise CheckFailedError(
-            f"server did not become ready within {timeout}s (still running, pid {st.pid})",
-            hint="check `make serve-logs`; stop it with `make serve-stop`",
+            f"сервер не стал готов за {timeout}с; процесс ещё работает, PID {st.pid})",
+            hint="проверьте make serve-logs; для остановки выполните make serve-stop",
         )
 
     def _foreground(self, st: ServerState, proc: subprocess.Popen[bytes]) -> None:
-        self.runner.info("[dim]foreground mode: streaming logs, Ctrl-C stops the server[/]")
+        self.runner.info("[dim]вывод журнала; Ctrl-C останавливает сервер[/]")
         try:
             with open(st.log_file, encoding="utf-8", errors="replace") as fh:
                 fh.seek(0, os.SEEK_END)
@@ -569,27 +568,27 @@ class ServerManager:
                     else:
                         time.sleep(0.3)
         except KeyboardInterrupt:
-            self.runner.info("\ninterrupt received: stopping server")
+            self.runner.info("\nполучено прерывание: остановка сервера")
         finally:
             if proc.poll() is None:
                 self.stop(st.name)
             else:
                 self._clear(st.name)
 
-    # ------------------------------------------------------------------- stop
+    # ------------------------------------------------------------------- остановка
     def stop(self, name: str) -> bool:
         st = self.load(name)
         if st is None:
-            self.runner.info(f"no server named '{name}' is recorded")
+            self.runner.info(f"нет сервера с именем '{name}' в сохранённом состоянии")
             return False
         if not self.owns(st):
             self.runner.warn(
-                f"pid {st.pid} is not the process setup-work started (exited or PID reused); "
-                "removing stale state without signalling anything"
+                f"PID {st.pid} не соответствует процессу setup-work; "
+                "устаревшее состояние удаляется без отправки сигналов"
             )
             self._clear(name)
             return False
-        self.runner.info(f"stopping '{name}' (pid {st.pid}, process group {st.pgid})")
+        self.runner.info(f"остановка '{name}' (PID {st.pid}, группа процессов {st.pgid})")
         if self.runner.dry_run:
             return True
         timeout = self.cfg.defaults.inference.stop_timeout_s
@@ -601,14 +600,14 @@ class ServerManager:
                 os.waitpid(st.pid, os.WNOHANG)
             time.sleep(0.3)
         if _pid_alive(st.pid) and self.owns(st):
-            self.runner.warn(f"still running after {timeout}s: sending SIGKILL")
+            self.runner.warn(f"процесс работает спустя {timeout} с: отправляется SIGKILL")
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(st.pgid, signal.SIGKILL)
         self._clear(name)
         self.runner.event("serve.stop", name=name, pid=st.pid)
         return True
 
-    # ---------------------------------------------------------------- status
+    # ---------------------------------------------------------------- состояние
     def status(self, name: str | None = None) -> list[dict[str, Any]]:
         states = [s for s in self.all_states() if name is None or s.name == name]
         out = []
@@ -635,18 +634,20 @@ class ServerManager:
             data = fh.read().decode("utf-8", errors="replace")
         return data.splitlines()[-lines:]
 
-    # ------------------------------------------------------------------ test
+    # ------------------------------------------------------------------ проверка
     def smoke_test(self, name: str, url: str | None = None, timeout: float = 120) -> dict[str, Any]:
         st = self.load(name) if url is None else None
         if url is None:
             if st is None:
-                raise NotFoundError(f"no server named '{name}'", hint="start one with `make serve`")
+                raise NotFoundError(
+                    f"нет сервера с именем '{name}'", hint="запустите сервер командой make serve"
+                )
             url = st.base_url
         url = url.rstrip("/")
         t0 = time.monotonic()
         code, models = http_json(url + "/v1/models", timeout=10)
         if code != 200 or not isinstance(models, dict) or not models.get("data"):
-            raise CheckFailedError(f"GET {url}/v1/models returned {code}: {str(models)[:200]}")
+            raise CheckFailedError(f"GET {url}/v1/models вернул код {code}: {str(models)[:200]}")
         model_id = models["data"][0]["id"]
         embedding = bool(st and st.embedding)
         if embedding:
@@ -680,7 +681,7 @@ class ServerManager:
                 "usage": body.get("usage") if isinstance(body, dict) else None,
             }
         if not ok:
-            raise CheckFailedError(f"request to {url} failed with {code}: {str(body)[:300]}")
+            raise CheckFailedError(f"запрос к {url} завершился с кодом {code}: {str(body)[:300]}")
         return {
             "url": url,
             "model": model_id,

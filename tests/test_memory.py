@@ -21,7 +21,7 @@ GEMMA3_12B = Attention(
 
 
 def test_kv_cache_dense_gqa():
-    # 2 (K,V) * 36 layers * 8 heads * 128 dim * 2 bytes = 147456 B/token
+    # 2 (K,V) × 36 слоёв × 8 голов × 128 × 2 байта = 147456 байт/токен
     assert kv_cache_bytes(QWEN3_8B, 1) == 147456
     assert kv_cache_bytes(QWEN3_8B, 32768) == 147456 * 32768  # 4.5 GiB
     assert abs(kv_cache_bytes(QWEN3_8B, 32768) / GiB - 4.5) < 1e-9
@@ -38,7 +38,7 @@ def test_sliding_window_layers_saturate():
     long = kv_cache_bytes(GEMMA3_12B, 32768)
     per_tok_layer = 2 * 8 * 256 * 2
     assert long == per_tok_layer * (8 * 32768 + 40 * 1024)
-    # Without the sliding window the cache would be 6x larger at 32k
+    # Без скользящего окна при 32k кэш был бы в 6 раз больше
     full = Attention(num_layers=48, num_attention_heads=16, num_kv_heads=8, head_dim=256)
     assert kv_cache_bytes(full, 32768) / long > 4
     assert short == per_tok_layer * 48 * 1024
@@ -46,7 +46,7 @@ def test_sliding_window_layers_saturate():
 
 def test_tensor_parallel_kv_sharding_and_replication():
     assert kv_heads_per_shard(8, 2) == 4
-    assert kv_heads_per_shard(4, 8) == 1  # replicated: each rank still holds one head
+    assert kv_heads_per_shard(4, 8) == 1  # репликация: у каждой доли остаётся одна голова
     assert kv_cache_bytes(QWEN3_8B, 1000, tp=2) == kv_cache_bytes(QWEN3_8B, 1000) // 2
     a = Attention(num_layers=1, num_attention_heads=8, num_kv_heads=2, head_dim=64)
     assert kv_cache_bytes(a, 100, tp=8) == kv_cache_bytes(a, 100, tp=2)

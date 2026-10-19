@@ -1,0 +1,43 @@
+# Скопируйте в $SETUP_WORK_HOME/config/corporate.yaml (см. README.md рядом).
+# Пути HDFS ниже — ПРИМЕРЫ: замените на ваши реальные архивы.
+# Каталог этих моделей находится в models.yaml рядом; нужны ОБА файла.
+
+hdfs:
+  cli: hdfs
+  kerberos: required
+
+env: {}
+# При необходимости добавьте несекретные настройки корпоративных сертификатов:
+#  SSL_CERT_FILE: /etc/pki/tls/certs/corp-ca-bundle.crt
+#  NODE_EXTRA_CA_CERTS: /etc/pki/tls/certs/corp-ca-bundle.crt
+
+models:
+  "qwen3.8-27b:full":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b.zip
+    # sha256: вставьте 64-символьный SHA256 архива, если нужна проверка
+
+  "qwen3.8-27b:awq":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
+
+  "qwen3.6-27b:q4_k_m":
+    uri: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
+
+engines:
+  llama.cpp:
+    uri: hdfs:///ml/engines/llama.cpp.zip
+    # Путь к готовому бинарнику относительно корня ZIP с исходниками и build.
+    # Если в корне ZIP сразу src/ и build/, уберите префикс llama.cpp/.
+    path: llama.cpp/build/bin/llama-server
+
+  vllm:
+    uri: hdfs:///ml/engines/vllm.zip
+    # Каталог внутри ZIP, в котором находятся pyvenv.cfg, bin/ и lib/.
+    path: vllm-venv
+
+# Необязательно, если uv и Node.js уже установлены.
+# Архивы должны соответствовать версиям и контрольным суммам config/defaults.yaml.
+# tools:
+#   uv:
+#     uri: hdfs:///ml/tools/uv/{name}
+#   node:
+#     uri: hdfs:///ml/tools/node/node-v{version}-{target}.tar.xz

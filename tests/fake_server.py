@@ -1,4 +1,4 @@
-"""Minimal OpenAI-compatible stand-in used by lifecycle tests (stdlib only)."""
+"""Минимальный OpenAI-совместимый сервер для тестов; только стандартная библиотека."""
 
 import json
 import os

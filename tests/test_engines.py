@@ -67,7 +67,7 @@ def test_llama_cpp_command_full_offload_and_split():
     argv = LlamaCppEngine().build_command(lc, "llama-server")
     j = " ".join(argv)
     assert "-m /m/x-00001-of-00003.gguf" in j
-    assert "-c 16384" in j and "-np 2" in j  # total cache = context x slots
+    assert "-c 16384" in j and "-np 2" in j  # общий кэш = контекст × слоты
     assert "-ngl all" in j
     assert "-sm layer -ts 0.7,0.3" in j
     assert "-t 8" in j

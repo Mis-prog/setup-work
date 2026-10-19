@@ -45,7 +45,7 @@ def test_plan_catalog_ref_without_cache_check(cfg, hw_4090):
     assert plan.launch.host == "127.0.0.1"
     assert "-c" in plan.argv and plan.argv[plan.argv.index("-c") + 1] == "16384"
     assert not plan.public
-    assert any("estimated memory" in r for r in plan.rationale)
+    assert any("оценка памяти" in r for r in plan.rationale)
 
 
 def test_plan_auto_selects_variant_for_engine(cfg, hw_a100x4):
@@ -54,11 +54,11 @@ def test_plan_auto_selects_variant_for_engine(cfg, hw_a100x4):
     )
     assert plan.launch.engine == "vllm"
     assert "--served-model-name" in plan.argv
-    assert any("auto-selected" in r for r in plan.rationale)
+    assert any("автоматически выбран" in r for r in plan.rationale)
 
 
 def test_plan_rejects_engine_variant_mismatch(cfg, hw_a100x4):
-    with pytest.raises(UsageError, match="packaged for llama.cpp"):
+    with pytest.raises(UsageError, match="подготовлен для llama.cpp"):
         plan_launch(
             cfg, hw_a100x4, "qwen3-8b:q4_k_m", ServeOptions(engine="vllm"), check_cache=False
         )
@@ -67,7 +67,7 @@ def test_plan_rejects_engine_variant_mismatch(cfg, hw_a100x4):
 def test_plan_rejects_unsupported_and_oversized(cfg, hw_v100, hw_cpu):
     with pytest.raises(UnsupportedError, match="7.5"):
         plan_launch(cfg, hw_v100, "qwen3-8b:awq", ServeOptions(), check_cache=False)
-    with pytest.raises(UnsupportedError, match="not to fit"):
+    with pytest.raises(UnsupportedError, match="недостаточно памяти"):
         plan_launch(cfg, hw_cpu, "qwen3-32b:q8_0", ServeOptions(context=32768), check_cache=False)
     with pytest.raises(UnsupportedError):
         plan_launch(cfg, hw_cpu, "qwen3-8b:bf16", ServeOptions(), check_cache=False)
@@ -77,7 +77,7 @@ def test_force_overrides_fit_check(cfg, hw_cpu):
     plan = plan_launch(
         cfg, hw_cpu, "qwen3-32b:q8_0", ServeOptions(context=32768, force=True), check_cache=False
     )
-    assert any(w.startswith("FORCED") for w in plan.warnings)
+    assert any(w.startswith("ПРИНУДИТЕЛЬНО") for w in plan.warnings)
 
 
 def test_public_bind_is_flagged(cfg, hw_4090):
@@ -85,11 +85,11 @@ def test_public_bind_is_flagged(cfg, hw_4090):
         cfg, hw_4090, "qwen3-8b:q4_k_m", ServeOptions(host="0.0.0.0"), check_cache=False
     )
     assert plan.public
-    assert any("WITHOUT authentication" in w for w in plan.warnings)
+    assert any("без аутентификации" in w for w in plan.warnings)
 
 
 def test_serve_never_downloads_implicitly(cfg, hw_4090):
-    with pytest.raises(NotFoundError, match="never downloads"):
+    with pytest.raises(NotFoundError, match="не скачивает модели"):
         plan_launch(cfg, hw_4090, "qwen3-8b:q4_k_m", ServeOptions())
 
 
@@ -133,7 +133,7 @@ def test_lifecycle_start_status_test_stop(cfg):
         assert status["running"] and status["healthy"]
         res = mgr.smoke_test("t")
         assert res["ok"] and res["reply"] == "pong"
-        with pytest.raises(UsageError, match="already running"):
+        with pytest.raises(UsageError, match="уже работает"):
             mgr.start(_fake_plan(port), detach=True)
         assert any("listening" in line for line in mgr.tail("t"))
     finally:
@@ -146,7 +146,7 @@ def test_lifecycle_start_status_test_stop(cfg):
 
 
 def test_stop_never_kills_unrelated_process(cfg):
-    """A recorded PID that now belongs to another process must not be signalled."""
+    """Не отправлять сигнал, если записанный PID теперь принадлежит другому процессу."""
     runner = Runner(assume_yes=True, interactive=False)
     mgr = ServerManager(cfg, runner)
     victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
@@ -167,8 +167,8 @@ def test_stop_never_kills_unrelated_process(cfg):
         )
         mgr._save(st)
         assert mgr.stop("stale") is False
-        assert victim.poll() is None  # still alive
-        assert mgr.load("stale") is None  # stale state cleaned up
+        assert victim.poll() is None  # процесс ещё работает
+        assert mgr.load("stale") is None  # устаревшее состояние удалено
     finally:
         victim.kill()
         victim.wait()
@@ -187,7 +187,7 @@ def test_start_detects_port_conflict(cfg):
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         s.listen()
-        with pytest.raises(UsageError, match="already in use"):
+        with pytest.raises(UsageError, match="уже используется"):
             mgr.start(_fake_plan(s.getsockname()[1]), detach=True)
 
 
@@ -213,7 +213,7 @@ def test_crash_before_ready_reports_logs(cfg):
         {},
         sys.executable,
     )
-    with pytest.raises(Exception, match="exited with code 3") as ei:
+    with pytest.raises(Exception, match="завершился с кодом 3") as ei:
         mgr.start(plan, detach=True)
     assert "boom: bad model" in (ei.value.hint or "")
     assert mgr.load("crash") is None

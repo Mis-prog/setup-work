@@ -1,189 +1,428 @@
 # setup-work
 
-Настройка рабочего места для AI/ML во внутренней сети. В публичный интернет
-(GitHub, pypi.org, nodejs.org, Hugging Face) не ходит.
+Подготовка рабочего места для AI/ML в корпоративной сети: настройка PyPI/npm,
+установка инструментов и агентов, загрузка моделей из HDFS и запуск локального
+OpenAI-совместимого API через llama.cpp или vLLM.
 
-- **pip, npm, uv** — корпоративные реестры в `pip.conf`, `.npmrc`, `uv.toml`;
-- **uv и Node.js** — из корпоративных архивов;
-- **модели и движки** (llama.cpp, vLLM) — zip с HDFS / NFS / внутреннего HTTPS;
-- **подбор модели под железо** и запуск OpenAI-совместимого сервера;
-- **харнессы** (qwen-code, opencode, pi, hermes, deepseek) и **skillhub** из Bitbucket.
+В этом репозитории настройки редактируются **прямо в `config/`**. Адреса с
+`CHANGE-ME`, пути HDFS и параметры моделей — заготовки: замените их своими.
 
-## Быстрый старт
+## 1. Что подготовить
 
-Нужны `git`, `make`, `python3` ≥ 3.11 (зеркала Python нет — он должен стоять на машине),
-для HDFS — клиент `hdfs` и билет Kerberos (`kinit`).
+На целевой машине должны быть:
 
-Всё храним в **одной папке на NFS** (`SETUP_WORK_HOME`), поэтому пересоздание
-контейнера ничего не стирает:
+- `git`, `make`, `python3` версии 3.11 или новее;
+- модуль `pip`, если uv будет устанавливаться из корпоративного PyPI;
+- доступ к корпоративным PyPI, npm и Bitbucket;
+- для HDFS — настроенный клиент Hadoop, конфигурация вашего кластера и доступ к нему;
+- для Kerberos — `kinit` и `klist`;
+- для vLLM — подходящая Linux-машина с NVIDIA GPU, драйвером и установленным Python
+  той же основной и дополнительной версии, что использовалась при сборке venv;
+- постоянный том, например NFS, с местом под архивы, распакованные модели и движки.
+
+Проверьте инструменты:
 
 ```bash
-cd ~/nfs/setup-work && git clone https://<bitbucket-host>/scm/<PROJECT>/setup-work.git
-cd setup-work
-make init SETUP_WORK_HOME=~/nfs/setup-work   # шаблоны настроек + env.sh — заполните config/
-. ~/nfs/setup-work/env.sh                    # ← в каждом новом контейнере / shell
-make bootstrap                               # pip/npm/uv → uv → окружение проекта → Node.js
-make doctor                                  # что настроено и чего не хватает
+python3 --version
+python3 -m pip --version
+git --version
+make --version
+hdfs version
 ```
 
-В новом контейнере достаточно `. ~/nfs/setup-work/env.sh`: настройки, реестры, uv,
-модели, движки и харнессы уже на NFS. В HOME контейнера setup-work ничего не пишет.
+Python проект автоматически не скачивает. Клиенты HDFS, Kerberos, драйвер NVIDIA
+и Bun для рецепта opencode тоже устанавливаются отдельно. Архивы движков нужно
+заранее подготовить под ОС, архитектуру и окружение целевой машины.
 
-```text
-~/nfs/setup-work/
-├── env.sh          PATH, PIP_CONFIG_FILE, UV_CONFIG_FILE, NPM_CONFIG_USERCONFIG, GIT_CONFIG_GLOBAL, кэши
-├── gitconfig       git config --global (логин Bitbucket, CA) — тоже переживает контейнер
-├── config/         bootstrap.env, corporate.yaml, harnesses.yaml   ← это заполняете вы
-├── registries/     pip.conf, uv.toml, npmrc                        ← пишет make registries
-├── bin/            uv, node, бинарники харнессов
-├── data/           модели, движки, харнессы, архивы
-├── state/          логи и состояние серверов
-├── cache/          кэш uv и npm
-└── setup-work/     этот репозиторий (можно и в другом месте)
+## 2. Выбрать каталог данных и подключить настройки
+
+Откройте корень этого репозитория, где находятся `Makefile` и каталог `config/`.
+Сам репозиторий тоже разместите на постоянном томе: его `.venv` хранится рядом
+с `pyproject.toml`.
+
+```bash
+# Постоянный каталог инструментов, моделей, кэшей и состояния.
+export SETUP_WORK_HOME="$HOME/nfs/setup-work"
+
+# Читать настройки прямо из config/ текущего репозитория.
+export SETUP_WORK_USER_CONFIG_DIR="$PWD/config"
+
+# Создать env.sh; существующие файлы настроек сохраняются.
+make init
+. "$SETUP_WORK_HOME/env.sh"
 ```
 
-Без `SETUP_WORK_HOME` используются обычные места: `~/.config/setup-work/`,
-`~/.local/share/setup-work/`, `~/.local/bin`.
+`SETUP_WORK_HOME` и каталог репозитория могут находиться в разных местах.
+Имена файлов и их назначение:
 
-## Где что указать
-
-Настройки — в `config/` (`$SETUP_WORK_HOME/config` или `~/.config/setup-work/`):
-
-| Файл | Что в нём |
+| Файл в репозитории | Что нужно заполнить |
 |---|---|
-| `bootstrap.env` | **URL PyPI и npm**, пути к файлам с токенами, откуда взять uv |
-| `corporate.yaml` | пути к **моделям, движкам, архивам uv/Node.js** (hdfs://, /nfs/…, https://), хост Bitbucket |
-| `harnesses.yaml` | **репозитории харнессов и skillhub** в Bitbucket (`repository`, `ref`) |
+| `config/bootstrap.env` | URL PyPI/npm, логин PyPI, пути к токенам, источник uv, при необходимости CA и прокси |
+| `config/corporate.yaml` | HDFS-пути к моделям, движкам и инструментам; пути внутри ZIP; хост Bitbucket |
+| `config/models.yaml` | Параметры архитектуры, типы и размеры весов ваших моделей |
+| `config/harnesses.yaml` | URL внутренних репозиториев агентов, тег/коммит, команды сборки и пути к исполняемым файлам |
+| `config/defaults.yaml` | Версии инструментов, контрольные суммы, порт, лимиты памяти и другие общие настройки |
 
-Пока в файле остаётся `CHANGE-ME`, соответствующая установка не запустится.
-Токены в файлы не пишутся — только пути к файлам с ними.
+Без `SETUP_WORK_USER_CONFIG_DIR` пользовательские настройки берутся из
+`$SETUP_WORK_HOME/config`, а без `SETUP_WORK_HOME` — из `~/.config/setup-work/`
+с учётом переменных XDG. Пользовательские YAML-настройки имеют приоритет над
+`config/` репозитория. Явный `export` выше выбирает нужный каталог и для bootstrap.
 
-### bootstrap.env → pip, npm, uv
+## 3. Заполнить PyPI, npm и файлы с токенами
+
+Отредактируйте **`config/bootstrap.env`**:
 
 ```sh
-SETUP_WORK_PYPI_INDEX=https://<repo>/<path>/pypi/simple
-SETUP_WORK_PYPI_USER=token                 # если нужен логин
-SETUP_WORK_PYPI_AUTH_FILE=~/nfs/token.txt  # файл с паролем/токеном
-SETUP_WORK_PYPI_TRUSTED_HOST=<repo-host>   # только если ругается на сертификат
-SETUP_WORK_NPM_REGISTRY=https://<repo>/<path>/npm/
-SETUP_WORK_NPM_AUTH_FILE=~/nfs/tokens/npm-token-base64.txt
-SETUP_WORK_NPM_OPTIONS="audit=false always-auth=true fetch-retries=5 save-exact=true"
-SETUP_WORK_UV_FROM_PIP=1                   # uv из корпоративного PyPI (или SETUP_WORK_UV_ARCHIVE=…)
+SETUP_WORK_PYPI_INDEX=https://CHANGE-ME-repo-host/repository/pypi-group/simple
+SETUP_WORK_PYPI_USER=token
+SETUP_WORK_PYPI_AUTH_FILE=~/nfs/tokens/pypi-token.txt
+
+SETUP_WORK_NPM_REGISTRY=https://CHANGE-ME-repo-host/repository/npm-group/
+SETUP_WORK_NPM_AUTH_FILE=~/nfs/tokens/npm-token.txt
+SETUP_WORK_NPM_STRICT_SSL=true
+SETUP_WORK_NPM_OPTIONS="audit=false fetch-retries=5 save-exact=true"
+
+SETUP_WORK_UV_FROM_PIP=1
 ```
 
-`make registries` записывает (права 600) в `$SETUP_WORK_HOME/registries/`
-(без `SETUP_WORK_HOME` — в обычные места: `~/.config/pip/pip.conf`, `~/.config/uv/uv.toml`, `~/.npmrc`):
+У администратора реестра уточните реальные URL и логин PyPI. Если реестр не требует
+аутентификации, оставьте соответствующий `AUTH_FILE` пустым, например:
 
-| Файл | Что пишется |
-|---|---|
-| `pip.conf` | `index-url`, `trusted-host` (остальные ваши настройки сохраняются) |
-| `uv.toml` | индекс по умолчанию, `python-downloads = "never"` (файл целиком ведёт setup-work) |
-| `npmrc` | `registry`, токен, `strict-ssl`/`cafile`, ключи из `SETUP_WORK_NPM_OPTIONS` (остальное сохраняется) |
+```sh
+SETUP_WORK_PYPI_AUTH_FILE=
+```
 
-`env.sh` направляет на них `pip`, `uv` и `npm`, поэтому они работают через
-корпоративный реестр и вне setup-work. Проверка: `pip config list`, `npm config get registry`,
-`cat $UV_CONFIG_FILE`. После смены токена — снова `make registries`.
-
-## Команды
-
-`make help` — полный список. Параметры передаются как переменные make.
+Создайте отдельные файлы с выданными токенами по указанным путям:
 
 ```bash
-# модели и движки
-make recommend TASK=coding CONTEXT=32768 EXPLAIN=1     # что влезет в это железо и почему
-make model-pull MODEL=qwen3-8b:q4_k_m                  # zip из corporate.yaml → распаковка
-make zip-join ZIP=/data/Qwen3.8-Flash                  # склеить .zip + .z01 + .z02 … (с подтверждением)
-make engine-install ENGINE=llama.cpp                   # или ENGINE=vllm (venv из zip, пути чинятся)
-
-# сервер
-make serve MODEL=qwen3-8b:q4_k_m CONTEXT=16384         # 127.0.0.1:8000, OpenAI API
-make serve-test ; make serve-logs FOLLOW=1 ; make serve-stop
-
-# харнессы и skillhub
-make harness-install NAME=qwen-code
-make harness-install NAME=skillhub
-make harness-doctor
+mkdir -p "$HOME/nfs/tokens"
+(umask 077; touch "$HOME/nfs/tokens/pypi-token.txt" "$HOME/nfs/tokens/npm-token.txt")
+chmod 600 "$HOME/nfs/tokens/pypi-token.txt" "$HOME/nfs/tokens/npm-token.txt"
 ```
 
-Общие переключатели: `DRY_RUN=1` — только показать план, `YES=1` — подтвердить всё,
-`JSON=1` — вывод в JSON. Подбор под другую машину: `make hardware-json > hw.json` там,
-`make recommend HARDWARE=hw.json` здесь (готовые профили — в `examples/hardware/`).
+Откройте каждый файл в редакторе и вставьте только его токен. Для npm требуется
+готовое значение `_authToken`; скрипт читает его как есть, без преобразования
+в Base64. Токены не вставляются в YAML, `bootstrap.env`, URL или команды shell.
+Сгенерированные `pip.conf`, `uv.toml` и `npmrc` содержат учётные данные и создаются
+с правами `600`; не публикуйте их содержимое.
 
-## Как упаковать артефакты
+`bootstrap.env` содержит строки `KEY=VALUE`. Этот файл не исполняется как shell:
+`$(команда)` и подстановка произвольных переменных не работают. Пути к токенам
+поддерживают `~/` и префикс `$HOME/`. Уже заданные переменные окружения имеют
+приоритет над значениями файла.
 
-| Что | Содержимое zip | Ключ в `corporate.yaml` |
+Если uv ещё не установлен, `SETUP_WORK_UV_FROM_PIP=1` устанавливает закреплённую
+проектом версию из вашего PyPI. Альтернатива — заполнить
+`SETUP_WORK_UV_ARCHIVE` путём к архиву на HDFS, NFS или внутреннем HTTPS.
+
+### Корпоративные сертификаты и прокси
+
+Если нужен собственный CA, раскомментируйте и поправьте в `bootstrap.env`:
+
+```sh
+PIP_CERT=/etc/pki/tls/certs/corp-ca-bundle.crt
+SSL_CERT_FILE=/etc/pki/tls/certs/corp-ca-bundle.crt
+SETUP_WORK_NPM_CAFILE=/etc/pki/tls/certs/corp-ca-bundle.crt
+```
+
+Для последующих Python-команд аналогичные несекретные переменные можно добавить
+в `env` файла `corporate.yaml`. Для Git CA настраивается отдельно после подключения
+`env.sh`:
+
+```bash
+git config --global http.sslCAInfo /путь/к/corp-ca.crt
+```
+
+Если нужен прокси, заполните `HTTP_PROXY`, `HTTPS_PROXY` и `NO_PROXY` в
+`bootstrap.env`. Переменные для текущего shell и команд, запущенных вне bootstrap,
+задавайте также через `export` либо через подходящий раздел `corporate.yaml`.
+`SETUP_WORK_PYPI_TRUSTED_HOST` отключает проверку TLS для указанного хоста,
+а `SETUP_WORK_NPM_STRICT_SSL=false` — для npm; для доверенного CA используйте
+пути к сертификатам.
+
+## 4. Прописать модели и движки на HDFS
+
+Отредактируйте **`config/corporate.yaml`**. В нём уже есть заготовки:
+
+```yaml
+models:
+  "qwen3.8-27b:full":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b.zip
+  "qwen3.8-27b:awq":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
+  "qwen3.6-27b:q4_k_m":
+    uri: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
+
+engines:
+  llama.cpp:
+    uri: hdfs:///ml/engines/llama.cpp.zip
+    path: llama.cpp/build/bin/llama-server
+  vllm:
+    uri: hdfs:///ml/engines/vllm.zip
+    path: vllm-venv
+```
+
+`uri` — расположение архива. `path` — путь **внутри ZIP**, относительно его корня:
+для llama.cpp это файл `llama-server`, для vLLM — каталог с `pyvenv.cfg`.
+Если в корне ZIP сразу лежат `src/` и `build/`, укажите
+`path: build/bin/llama-server`.
+
+| Артефакт | Что должно быть в архиве |
+|---|---|
+| GGUF | Одна модель `.gguf` или все её шарды; при нескольких квантах уточните `files` в каталоге моделей |
+| Модель vLLM | Полный каталог с `config.json`, весами `*.safetensors`, индексом шардов и всеми файлами токенизатора |
+| llama.cpp | Готовый `llama-server` и необходимые библиотеки; исходники и `build/` могут оставаться в архиве |
+| vLLM | Установленное venv со всеми зависимостями, каталогами `bin/`, `lib/` и файлом `pyvenv.cfg` |
+| uv/Node.js | Архив под версии и SHA256 из `config/defaults.yaml` |
+
+Установщик llama.cpp не компилирует исходники. venv vLLM переносится с исправлением
+путей к Python и строк запуска скриптов; совместимость ОС, Python, CUDA и библиотек
+нужно обеспечить при подготовке архива. Для сохранения ссылок окружения используйте
+`zip -r -y`. Модели должны содержать сами веса, а не ссылки на чужой кэш.
+
+В разделе `tools` поправьте пути к архивам uv и Node.js. Если подходящий инструмент
+уже установлен, его архив не понадобится. Для новых версий обновите также версию
+и контрольные суммы в `defaults.yaml`; для начальной установки uv соответствующие
+параметры находятся и в `scripts/bootstrap.sh` / `bootstrap.env`.
+
+При необходимости добавьте к артефактам `sha256`, вычисленный для самого архива:
+
+```bash
+sha256sum /путь/к/архиву.zip
+```
+
+Для HTTPS контрольная сумма обязательна. Новую сборку публикуйте под новым URI
+или меняйте `sha256`: установленный артефакт с прежними URI и SHA256 переиспользуется.
+
+Проверьте доступ к реальным путям:
+
+```bash
+kinit
+klist -s
+hdfs dfs -ls hdfs:///ml/models/
+hdfs dfs -ls hdfs:///ml/engines/
+```
+
+В `hdfs.cli` можно указать полный путь к клиенту. При обязательном Kerberos
+задайте `hdfs.kerberos: required`. Модели и движки скачиваются из HDFS и
+распаковываются на диск/NFS; сервер читает распакованные файлы. На время установки
+нужно место под архив и распакованное содержимое, при обновлении — также под старую копию.
+
+## 5. Заполнить параметры моделей
+
+В конце **`config/models.yaml`** находятся ваши модели:
+
+| Идентификатор для команд | Формат | Движок |
 |---|---|---|
-| GGUF для llama.cpp | `.gguf` (шарды `-00001-of-0000N`), можно в подкаталоге | `models: "<id>:<variant>"` |
-| Веса для vLLM | каталог HF: `config.json`, `*.safetensors`, токенизатор | `models: "<id>:<variant>"` |
-| llama.cpp | собранный `llama-server` и его `.so` рядом | `engines: llama.cpp` |
-| vLLM | каталог venv, упакованный `zip -r` | `engines: vllm` |
-| uv, Node.js | официальные архивы (sha256 проверяется по `config/defaults.yaml`) | `tools: uv / node` |
+| `qwen3.8-27b:full` | Предполагаются неквантованные safetensors | vLLM |
+| `qwen3.8-27b:awq` | Предполагается AWQ в safetensors | vLLM |
+| `qwen3.6-27b:q4_k_m` | GGUF Q4_K_M | llama.cpp |
 
-`id:variant` — из `make models`. Свои модели — в `config/models.yaml`
-(пример: `examples/corp/models.yaml`). venv vLLM собирайте на той же ОС, версии Python и
-CUDA, что у целевых машин: после распаковки setup-work перепривязывает его к
-установленному Python той же версии и переписывает shebang в `bin/*`.
+Названия сохранены как указаны пользователем. Их параметры и поддержку движками
+нужно сверить с реальными файлами. Замените **все активные `CHANGE-ME`**:
 
-Повторный `model-pull` ничего не качает, если URI и sha256 не изменились. Нужен запас
-места ~2× архива (`SETUP_WORK_MODEL_DIR` — куда распаковывать).
-
-## Харнессы из Bitbucket
-
-Ссылка — из кнопки Clone: `https://<bitbucket-host>/scm/<PROJECT>/<repo>.git`. Логин и
-токен git берёт из credential helper
-(`git config --global credential.helper "store --file $SETUP_WORK_HOME/git-credentials"` —
-с `env.sh` настройка и токен лежат на NFS),
-корпоративный CA — `git config --global http.sslCAInfo /path/to/ca.crt`. Хост добавьте в
-`trusted_git_hosts` в `corporate.yaml`, тогда команды сборки из рецепта не требуют
-`ALLOW_BUILD=1`. Харнесс ставится в `~/.local/share/setup-work/harnesses/<name>/`,
-бинарники линкуются в `~/.local/bin`.
-
-## Решение проблем
-
-| Симптом | Решение |
+| Поле | Откуда взять значение |
 |---|---|
-| `no corporate PyPI configured` | заполните `SETUP_WORK_PYPI_INDEX` в `bootstrap.env`, затем `make registries` |
-| `Failed to fetch https://files.pythonhosted.org/…`, `dns error` | uv не видит корпоративный индекс: `make registries`, проверьте `~/.config/uv/uv.toml` |
-| `uv.toml exists and was not written by setup-work` | перенесите свои настройки и удалите файл, затем `make registries` |
-| в новом контейнере `uv: command not found`, pip/npm смотрят в интернет | не выполнен `. ~/nfs/setup-work/env.sh` |
-| `uv.lock` изменён после `make` | так и должно быть (lock пересобран под корпоративный индекс); перед `git pull` — `git checkout uv.lock` |
-| `no corporate source for uv` / `for node` | `SETUP_WORK_UV_FROM_PIP=1` или `SETUP_WORK_UV_ARCHIVE` в `bootstrap.env`; `tools.node` в `corporate.yaml` |
-| `Python … is not installed` | Python не скачивается: поставьте нужную версию на машину (пакет, админы) |
-| `no valid Kerberos ticket` | `kinit`, затем повторить |
-| `does not exist on HDFS` | проверьте путь: `hdfs dfs -ls <uri>` |
-| `has no artifact source` | добавьте `"<id>:<variant>"` в `models:` в `corporate.yaml` |
-| `estimated not to fit` | меньше `CONTEXT`/`CONCURRENCY`, вариант поменьше, `TP=`, или `FORCE=1` |
-| `still contains the CHANGE-ME placeholder` | заполните `repository`/`ref` в `harnesses.yaml` |
-| `server did not become ready` | большие модели грузятся минутами: `make serve-logs` |
+| `license`, `parameters_b`, `architecture` | Описание модели; `architecture` принимает `dense` или `moe` |
+| `context_length` | Поддерживаемый контекст, обычно `max_position_embeddings` в конфигурации модели |
+| `attention.num_layers` | `num_hidden_layers` |
+| `attention.num_attention_heads` | `num_attention_heads` |
+| `attention.num_kv_heads` | `num_key_value_heads` |
+| `attention.head_dim` | `head_dim` из конфигурации архитектуры |
+| `dtype` | Тип весов полной модели; для AWQ — тип активаций |
+| `size_gb` | Сумма размеров файлов весов в байтах / 1 000 000 000, без ZIP и токенизатора |
 
-## Безопасность
+Параметры могут находиться в `text_config` внутри `config.json`; для GGUF доступны
+также метаданные файла. Для MoE дополнительно нужны `active_parameters_b` и
+`moe: {num_experts: ..., experts_per_token: ...}`. Если модель использует гибридное
+внимание, текущая формула оценки памяти может требовать доработки.
 
-- Никаких публичных хостов, `curl | sh`, sudo и правок профиля shell.
-- Подпроцессы — только списком аргументов; переменные make идут через окружение.
-- Токены читаются из файлов, не печатаются и не попадают в argv; в выводе маскируются.
-- Удаление (`model-remove`, `harness-remove`, `clean`) показывает, что будет удалено, и
-  спрашивает подтверждение.
-- Сервер слушает `127.0.0.1`; другой адрес — только с подтверждением, ключ API
-  передаётся через файл или окружение.
+`source` в варианте модели — резервный путь к артефакту. Если тот же вариант указан
+в `corporate.yaml`, используется путь оттуда. При смене адреса поправьте оба места.
+Встроенные модели остаются в каталоге, однако для их скачивания тоже нужен внутренний источник.
 
-## Разработка
+Пока обязательные параметры не заполнены, `config-validate`, `models`,
+`recommend` и запуск моделей будут сообщать об ошибке. Не подставляйте случайные
+числа ради успешной проверки: они участвуют в расчёте памяти.
 
-```bash
-make check     # ruff + pytest + проверка конфигурации
-make format
+## 6. Заполнить харнессы и доступ к Bitbucket
+
+В **`config/harnesses.yaml`** подготовлены qwen-code, opencode, pi, hermes,
+deepseek и skillhub из внутренних Git-репозиториев. Для каждого нужного рецепта:
+
+1. Скопируйте HTTPS-ссылку из кнопки Clone в Bitbucket в `repository`.
+2. Укажите ваш тег или коммит в `ref` вместо `CHANGE-ME`.
+3. Сверьте `install.build` и пути в `binaries` с вашим форком.
+4. Проверьте требования `requires` и `requires_commands`.
+
+```yaml
+repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/qwen-code.git
+ref: CHANGE-ME
 ```
 
-Вне корпоративной сети задайте индекс явно: `export UV_DEFAULT_INDEX=<url>/simple`.
-Тесты не требуют GPU, сети и HDFS (всё замокано, профили железа — в `examples/hardware/`).
+В `corporate.yaml` укажите соответствующий хост без схемы и пути:
+
+```yaml
+trusted_git_hosts:
+  - CHANGE-ME-bitbucket-host
+```
+
+Для этого хоста разрешаются команды сборки из рецепта без `ALLOW_BUILD=1`.
+Git использует вашу аутентификацию через credential helper. Настройте её и заранее
+проверьте доступ командой `git ls-remote` с реальным URL: при установке интерактивный
+запрос Git отключён. После подключения `env.sh` глобальные настройки Git находятся
+в `$SETUP_WORK_HOME/gitconfig`.
+
+Для opencode в текущем рецепте отдельно нужен Bun. Python-рецепты ниже используют
+Python 3.12. Команды сборки — заготовки, которые нужно сверить с внутренними форками.
+`skillhub` только клонируется; раскладка навыков по агентам пока не выполняется.
+claude-code, codex и aider сохранены как пакетные рецепты для корпоративных npm/PyPI.
+
+## 7. Применить настройки и проверить рабочее место
+
+После заполнения файлов, из корня репозитория:
+
+```bash
+export SETUP_WORK_USER_CONFIG_DIR="$PWD/config"
+. "$SETUP_WORK_HOME/env.sh"
+
+# Показать, куда будут записаны настройки, без записи и загрузок.
+make registries DRY_RUN=1
+
+# Создать pip.conf, uv.toml и npmrc с корпоративными реестрами.
+make registries
+
+# Установить uv, окружение проекта и недостающий Node.js.
+make bootstrap
+
+# Проверить файлы и показать фактически используемые каталоги.
+make config-validate
+make config-show
+make doctor
+```
+
+`DRY_RUN=1` показывает план, но не проверяет доступность сервисов и токены.
+При первом bootstrap `uv.lock` может измениться: зависимости привязываются
+к корпоративному индексу. Перед обновлением репозитория просмотрите изменения
+и сохраните нужные, не отбрасывая их вслепую.
+
+Созданные файлы находятся в `$SETUP_WORK_HOME/registries/`; переменные из `env.sh`
+подключают их для pip, uv и npm. После смены токена повторите `make registries`.
+После смены контейнера сначала проверьте системный Python, HDFS и Kerberos:
+эти инструменты должны быть доступны в новом контейнере отдельно.
+
+## 8. Установить модель и запустить API
+
+Сначала посмотрите железо и оценку памяти:
+
+```bash
+make hardware
+make recommend TASK=coding CONTEXT=8192 EXPLAIN=1
+```
+
+Для GGUF через llama.cpp:
+
+```bash
+make engine-install ENGINE=llama.cpp
+make model-pull MODEL=qwen3.6-27b:q4_k_m
+make serve MODEL=qwen3.6-27b:q4_k_m ENGINE=llama.cpp CONTEXT=8192
+make serve-test
+make serve-logs
+make serve-stop
+```
+
+Для AWQ через vLLM:
+
+```bash
+make engine-install ENGINE=vllm
+make model-pull MODEL=qwen3.8-27b:awq
+make serve MODEL=qwen3.8-27b:awq ENGINE=vllm CONTEXT=8192
+make serve-test
+```
+
+Для полной модели используйте `MODEL=qwen3.8-27b:full`.
+Контекст `8192` — пример: допустимый запуск зависит от модели, железа и движка.
+По умолчанию API доступен по `http://127.0.0.1:8000/v1`.
+
+Агент устанавливается отдельно:
+
+```bash
+make harness-install NAME=qwen-code DRY_RUN=1
+make harness-install NAME=qwen-code
+make harness-doctor NAME=qwen-code
+```
+
+Адрес API и ключ для самого агента задаются по его настройкам. В `.env.example`
+есть заготовки `OPENAI_BASE_URL`, `OPENAI_API_KEY` и `SETUP_WORK_API_KEY`.
+Файл `.env` автоматически не читается: при использовании загрузите его явно
+в shell. Саму команду агента запускайте после подключения `env.sh`.
+
+## 9. Что делать в новом shell или контейнере
+
+Откройте корень репозитория на постоянном томе и выполните:
+
+```bash
+. "$HOME/nfs/setup-work/env.sh"
+export SETUP_WORK_USER_CONFIG_DIR="$PWD/config"
+kinit
+make doctor
+```
+
+Используйте ваш фактический путь к `env.sh`. Необходимость `kinit` зависит от
+настроек кластера и срока действия билета. Если Python или путь к нему изменился,
+может потребоваться `make sync` и повторная установка подходящего движка.
 
 ```text
-Makefile ─ SETUP_WORK_* ─▶ setup_work.cli
-  scripts/bootstrap.sh  pip.conf / uv.toml / .npmrc, uv, uv sync   (до Python-окружения)
-  config.py      YAML: config/ репозитория + ваш config/ ($SETUP_WORK_HOME/config)
-  bootstrap.py   uv, Node.js, движки из corporate.yaml
-  hub.py, artifacts.py   модели: HDFS/NFS/HTTPS → распаковка
-  hardware.py, memory.py, models.py, engines.py   железо → оценка памяти → подбор
-  inference.py   запуск и остановка сервера
-  harness.py     харнессы и skillhub
-  steps.py, runner.py    план → выполнение (dry-run, подтверждения, маскирование)
+$SETUP_WORK_HOME/
+├── env.sh             подключение PATH и настроек инструментов
+├── gitconfig          настройки Git
+├── registries/        pip.conf, uv.toml, npmrc
+├── bin/               ссылки на uv, Node.js и команды агентов
+├── data/
+│   ├── models/        распакованные модели
+│   ├── engines/       распакованные движки
+│   └── harnesses/     установленные агенты
+├── state/             состояние серверов и логи
+└── cache/             кэши uv и npm
 ```
+
+## Если команда сообщает об ошибке
+
+Сообщения самого setup-work и подсказки выводятся на русском. Текст внешних
+инструментов, системных библиотек и серверов может оставаться на их языке.
+
+| Ситуация | Что исправить |
+|---|---|
+| Не заполнен `CHANGE-ME` | Откройте названный файл и поле; параметры моделей находятся в конце `config/models.yaml` |
+| Нет корпоративного PyPI | Заполните `SETUP_WORK_PYPI_INDEX` в `config/bootstrap.env`, выберите каталог через `SETUP_WORK_USER_CONFIG_DIR`, повторите `make registries` |
+| Не читается файл токена | Создайте файл по пути `AUTH_FILE`, проверьте права либо очистите настройку для реестра без аутентификации |
+| Ошибка сертификата | Укажите реальный корпоративный CA для pip/uv/npm/Git и проверьте доступность файла |
+| Не найден uv или Node.js | Укажите источник uv в `bootstrap.env`, Node.js — в `corporate.yaml`, проверьте `PATH` после подключения `env.sh` |
+| Не установлен Python нужной версии | Установите его в контейнере или подготовьте совместимый архив vLLM |
+| Нет билета Kerberos | Выполните `kinit` и повторите команду |
+| Нет файла на HDFS | Проверьте `hdfs dfs -ls` для конкретного `uri` из `corporate.yaml` |
+| Не найден `llama-server` или `pyvenv.cfg` | Проверьте содержимое ZIP и `engines.<движок>.path` |
+| Git не может прочитать репозиторий | Проверьте URL, `ref`, CA и credential helper через `git ls-remote` |
+| Не хватает памяти | Уменьшите `CONTEXT`/`CONCURRENCY`, выберите меньший вариант; посмотрите `make recommend EXPLAIN=1` |
+| Сервер долго не готов | Посмотрите `make serve-logs FOLLOW=1`; большие модели загружаются долго |
+| Конфигурация читается из другого места | Проверьте `SETUP_WORK_USER_CONFIG_DIR` и вывод `make config-show` |
+| Чужой `uv.toml` | Перенесите нужные настройки и сохраните резервную копию файла; затем освободите путь для `make registries` |
+
+## Остальные команды и разработка
+
+`make help` показывает все команды. `DRY_RUN=1` выводит план, `JSON=1` включает JSON
+там, где он поддерживается, `YES=1` автоматически подтверждает запрошенные действия.
+
+```bash
+make model-list
+make engine-status
+make serve-status
+make harness-list
+make zip-join ZIP=/путь/к/разбитому/архиву
+make check
+```
+
+`make check` выполняет ruff, pytest и проверку конфигурации; перед ним заполните
+обязательные параметры моделей. Тестам не нужны настоящие GPU, HDFS и доступ
+в интернет, но серверным тестам требуется возможность открыть локальный порт.
+Имена полей YAML, переменных окружения, команд и ключей JSON остаются на английском.

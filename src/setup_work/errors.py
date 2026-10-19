@@ -1,16 +1,9 @@
-"""Error types and the process exit codes they map to.
+"""Ошибки и соответствующие коды завершения процесса.
 
-Exit codes are part of the public interface (scripts depend on them):
-
-    0  success
-    1  generic failure (an operation ran and failed)
-    2  invalid usage or invalid configuration
-    3  a required external dependency is missing
-    4  the requested configuration is unsupported on this machine
-    5  aborted by the user (confirmation declined)
-    6  requested object not found (model, harness, server)
-    7  a check did not pass (doctor / harness-doctor / serve-test / config-validate)
-"""
+Коды являются частью интерфейса для скриптов:
+0 — успешно; 1 — ошибка операции; 2 — неверные параметры или конфигурация;
+3 — отсутствует зависимость; 4 — конфигурация не поддерживается;
+5 — отмена пользователем; 6 — объект не найден; 7 — проверка не пройдена."""
 
 from __future__ import annotations
 
@@ -29,7 +22,7 @@ class ExitCode(IntEnum):
 
 
 class SetupWorkError(Exception):
-    """Base error. `hint` is an actionable next step shown to the user."""
+    """Базовая ошибка; hint содержит конкретную подсказку пользователю."""
 
     exit_code: ExitCode = ExitCode.FAILURE
 
@@ -39,7 +32,7 @@ class SetupWorkError(Exception):
         self.hint = hint
 
     def __str__(self) -> str:
-        return self.message + (f"\nhint: {self.hint}" if self.hint else "")
+        return self.message + (f"\nчто сделать: {self.hint}" if self.hint else "")
 
 
 class ConfigError(SetupWorkError):

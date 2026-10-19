@@ -1,16 +1,10 @@
-"""Declarative configuration: schemas, loading and layering.
+"""Схемы, загрузка и объединение конфигурации.
 
-Configuration is read from two layers:
-
-1. the built-in directory (``$SETUP_WORK_CONFIG_DIR``, the repository ``config/``
-   directory, or the copy bundled into the wheel), and
-2. the user directory (``$SETUP_WORK_USER_CONFIG_DIR``, default
-   ``$XDG_CONFIG_HOME/setup-work`` or ``~/.config/setup-work``).
-
-Files with the same name are deep-merged: mappings merge key by key and the
-user layer wins; lists and scalars are replaced. Secrets never live here; recipes
-only reference environment variable *names*.
-"""
+Встроенный слой: SETUP_WORK_CONFIG_DIR, config/ репозитория или файлы пакета.
+Пользовательский слой: SETUP_WORK_USER_CONFIG_DIR, SETUP_WORK_HOME/config
+или каталог XDG. Пользовательские значения имеют приоритет.
+Настройки объединяются по ключам, записи каталогов моделей и харнессов
+заменяются целиком. Секреты в YAML не хранятся."""
 
 from __future__ import annotations
 
@@ -41,7 +35,7 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=False)
 
 
-# --------------------------------------------------------------------------- defaults
+# --------------------------------------------------------------------------- значения по умолчанию
 
 
 class PathsConfig(Strict):
@@ -82,7 +76,9 @@ class ToolPin(Strict):
     def _hex(cls, v: dict[str, str]) -> dict[str, str]:
         for target, digest in v.items():
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise ValueError(f"sha256 for {target!r} is not a 64-char hex digest")
+                raise ValueError(
+                    f"SHA256 для {target!r} должен содержать 64 шестнадцатеричных символа"
+                )
         return v
 
 
@@ -94,7 +90,7 @@ class Defaults(Strict):
     tools: dict[str, ToolPin] = Field(default_factory=dict)
 
 
-# --------------------------------------------------------------------------- models
+# --------------------------------------------------------------------------- модели
 
 
 class Attention(Strict):
@@ -108,11 +104,14 @@ class Attention(Strict):
     @model_validator(mode="after")
     def _check(self) -> Attention:
         if self.num_attention_heads % self.num_kv_heads:
-            raise ValueError("num_attention_heads must be a multiple of num_kv_heads")
+            raise ValueError(
+                "num_attention_heads должен быть кратен "
+                "num_kv_heads; проверьте attention в config/models.yaml"
+            )
         if self.sliding_window_layers > self.num_layers:
-            raise ValueError("sliding_window_layers cannot exceed num_layers")
+            raise ValueError("sliding_window_layers не должен превышать num_layers")
         if self.sliding_window_layers and not self.sliding_window:
-            raise ValueError("sliding_window_layers requires sliding_window")
+            raise ValueError("для sliding_window_layers заполните sliding_window")
         return self
 
 
@@ -126,9 +125,9 @@ class Variant(Strict):
     format: Literal["safetensors", "gguf"]
     quantization: str = "none"
     dtype: Literal["bf16", "fp16", "fp32"] | None = None
-    repository: str | None = None  # upstream repo id (org/name), reference only
-    source: str | None = None  # corporate artifact URI (hdfs://, /path, https://)
-    sha256: str | None = None  # of the artifact archive, when `source` is used
+    repository: str | None = None  # идентификатор исходного репозитория org/name, только справочно
+    source: str | None = None  # URI корпоративного артефакта: hdfs://, /путь, https://
+    sha256: str | None = None  # контрольная сумма архива из source
     files: list[str] | None = None
     size_gb: float = Field(gt=0)
     engines: list[str]
@@ -140,14 +139,14 @@ class Variant(Strict):
         if v is None:
             return v
         if not re.fullmatch(r"[A-Za-z0-9][\w.-]*/[\w.-]+", v):
-            raise ValueError(f"invalid repository id {v!r}; expected org/name")
+            raise ValueError(f"неверный идентификатор репозитория {v!r}; требуется org/name")
         return v
 
     @field_validator("quantization")
     @classmethod
     def _quant(cls, v: str) -> str:
         if v not in QUANTIZATIONS:
-            raise ValueError(f"unknown quantization {v!r}; expected one of {QUANTIZATIONS}")
+            raise ValueError(f"неизвестное квантование {v!r}; допустимые значения: {QUANTIZATIONS}")
         return v
 
     @field_validator("engines")
@@ -155,22 +154,25 @@ class Variant(Strict):
     def _engines(cls, v: list[str]) -> list[str]:
         for e in v:
             if e not in ENGINE_NAMES:
-                raise ValueError(f"unknown engine {e!r}; expected one of {ENGINE_NAMES}")
+                raise ValueError(f"неизвестный движок {e!r}; допустимые значения: {ENGINE_NAMES}")
         return v
 
     @model_validator(mode="after")
     def _format_rules(self) -> Variant:
         if self.format == "gguf":
             if not self.files:
-                raise ValueError("gguf variants must list their files")
+                raise ValueError("для GGUF заполните files в config/models.yaml")
             if "vllm" in self.engines:
-                raise ValueError("vLLM GGUF support is experimental; list gguf for llama.cpp only")
+                raise ValueError(
+                    "для GGUF укажите engines: [llama.cpp]; "
+                    "поддержка GGUF в vLLM здесь не используется"
+                )
         if self.format == "safetensors" and "llama.cpp" in self.engines:
-            raise ValueError("llama.cpp only loads GGUF files")
+            raise ValueError("для llama.cpp требуется format: gguf")
         if self.quantization == "none" and self.dtype is None:
-            raise ValueError("unquantised variants must declare dtype")
+            raise ValueError("для неквантованного варианта заполните dtype в config/models.yaml")
         if not self.repository and not self.source:
-            raise ValueError("a variant needs an upstream `repository` or an artifact `source`")
+            raise ValueError("для варианта заполните repository либо source в config/models.yaml")
         if self.source:
             validate_artifact_uri(self.source)
         return self
@@ -205,21 +207,21 @@ class ModelSpec(Strict):
     def _workloads(cls, v: list[str]) -> list[str]:
         for w in v:
             if w not in WORKLOADS:
-                raise ValueError(f"unknown workload {w!r}; expected one of {WORKLOADS}")
+                raise ValueError(f"неизвестная задача {w!r}; допустимые значения: {WORKLOADS}")
         return v
 
     @model_validator(mode="after")
     def _moe(self) -> ModelSpec:
         if self.architecture == "moe":
             if self.active_parameters_b is None or self.moe is None:
-                raise ValueError("MoE models must declare active_parameters_b and moe")
+                raise ValueError("для MoE заполните active_parameters_b и moe в config/models.yaml")
             if self.active_parameters_b >= self.parameters_b:
-                raise ValueError("active_parameters_b must be smaller than parameters_b")
+                raise ValueError("active_parameters_b должно быть меньше parameters_b")
         ids = [v.id for v in self.variants]
         if len(ids) != len(set(ids)):
-            raise ValueError("variant ids must be unique")
+            raise ValueError("идентификаторы вариантов id должны быть уникальны")
         if not self.variants:
-            raise ValueError("a model needs at least one variant")
+            raise ValueError("добавьте хотя бы один вариант в variants модели")
         return self
 
     @property
@@ -238,17 +240,17 @@ class ModelCatalog(Strict):
     def _names(cls, v: dict[str, ModelSpec]) -> dict[str, ModelSpec]:
         for name in v:
             if not _NAME_RE.match(name):
-                raise ValueError(f"invalid model id {name!r}")
+                raise ValueError(f"неверный идентификатор модели {name!r}")
         return v
 
 
-# --------------------------------------------------------------------------- harnesses
+# --------------------------------------------------------------------------- харнессы
 
 
 class HarnessInstall(Strict):
     method: Literal["npm", "uv", "none"] | None = None
     python: str | None = None
-    # One argv (["npm", "run", "build"]) or a list of argvs run in order in the checkout.
+    # Одна команда argv или список команд, выполняемых по порядку в каталоге исходников.
     build: list[str] | list[list[str]] | None = None
 
     @property
@@ -261,7 +263,7 @@ class HarnessInstall(Strict):
 
 
 class BinarySpec(Strict):
-    """A binary to expose. `path` is relative to the checkout (git/local) or install dir."""
+    """Исполняемый файл; path задаётся относительно исходников или каталога установки."""
 
     name: str
     path: str | None = None
@@ -271,14 +273,14 @@ class BinarySpec(Strict):
     @classmethod
     def _name(cls, v: str) -> str:
         if not re.fullmatch(r"[\w.-]+", v) or v.startswith("."):
-            raise ValueError(f"invalid binary name {v!r}")
+            raise ValueError(f"неверное имя исполняемого файла {v!r}")
         return v
 
     @field_validator("path")
     @classmethod
     def _path(cls, v: str | None) -> str | None:
         if v is not None and (v.startswith("/") or ".." in Path(v).parts):
-            raise ValueError(f"binary path {v!r} must be relative and stay inside the checkout")
+            raise ValueError(f"путь {v!r} должен быть относительным и оставаться внутри исходников")
         return v
 
 
@@ -291,7 +293,7 @@ class HarnessEnvironment(Strict):
     def _names(cls, v: list[str]) -> list[str]:
         for name in v:
             if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", name):
-                raise ValueError(f"invalid environment variable name {name!r}")
+                raise ValueError(f"неверное имя переменной окружения {name!r}")
         return v
 
 
@@ -322,44 +324,46 @@ class HarnessSpec(Strict):
         s = self.source
         if s in ("npm", "pypi"):
             if not self.package:
-                raise ValueError(f"source {s} requires 'package'")
+                raise ValueError(f"source {s} требует поле package")
             if not self.version:
-                raise ValueError(f"source {s} requires 'version' (use an exact version)")
+                raise ValueError(f"source {s} требует точную версию в поле version")
             if not _VERSION_RE.match(self.version):
-                raise ValueError(f"invalid version {self.version!r}")
+                raise ValueError(f"неверная версия {self.version!r}")
             if s == "npm" and not re.fullmatch(
                 r"(@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*", self.package
             ):
-                raise ValueError(f"invalid npm package name {self.package!r}")
+                raise ValueError(f"неверное имя пакета npm {self.package!r}")
             if s == "pypi" and not re.fullmatch(r"[A-Za-z0-9][\w.-]*", self.package):
-                raise ValueError(f"invalid PyPI package name {self.package!r}")
+                raise ValueError(f"неверное имя пакета PyPI {self.package!r}")
         if s == "git":
             if not self.repository:
-                raise ValueError("source git requires 'repository'")
+                raise ValueError("для source: git заполните repository в config/harnesses.yaml")
             if not _GIT_URL_RE.match(self.repository):
                 raise ValueError(
-                    f"repository {self.repository!r} must be an https://, ssh:// or "
-                    "user@host:path URL (no file://, ext:: or option-like values)"
+                    f"repository {self.repository!r} должен быть URL https://, ssh:// либо "
+                    "user@host:path; file://, ext:: и значения, похожие на опции, запрещены"
                 )
             if not self.ref:
-                raise ValueError("source git requires 'ref' (branch, tag or commit) for pinning")
+                raise ValueError("для source: git заполните ref: ветку, тег или коммит")
             if not _REF_RE.match(self.ref) or ".." in self.ref:
-                raise ValueError(f"invalid git ref {self.ref!r}")
+                raise ValueError(f"неверное значение ref для Git {self.ref!r}")
         if s == "local" and not self.path:
-            raise ValueError("source local requires 'path'")
+            raise ValueError("для source: local заполните path")
         if s in ("git", "local") and self.install.method is None:
-            raise ValueError(f"source {s} requires install.method (npm, uv or none)")
+            raise ValueError(f"source {s} требует install.method: npm, uv либо none")
         for b in self.binaries:
             name = b if isinstance(b, str) else b.name
             if not re.fullmatch(r"[\w.-]+", name) or name.startswith("."):
-                raise ValueError(f"invalid binary name {name!r}")
+                raise ValueError(f"неверное имя исполняемого файла {name!r}")
         if self.install.build is not None and (
             not self.install.build or any(not argv for argv in self.install.build_steps)
         ):
-            raise ValueError("install.build must be a non-empty argv list (or list of them)")
+            raise ValueError(
+                "install.build должен содержать непустую команду argv либо список таких команд"
+            )
         for k in self.requires:
             if k not in ("node", "python"):
-                raise ValueError(f"unsupported requirement {k!r} (node, python)")
+                raise ValueError(f"неподдерживаемое требование {k!r} (node, python)")
         return self
 
     @property
@@ -390,11 +394,13 @@ class HarnessCatalog(Strict):
     def _names(cls, v: dict[str, HarnessSpec]) -> dict[str, HarnessSpec]:
         for name in v:
             if not _NAME_RE.match(name):
-                raise ValueError(f"invalid harness name {name!r} (lowercase, digits, . _ -)")
+                raise ValueError(
+                    f"неверное имя харнесса {name!r}(строчные латинские буквы, цифры, . _ -)"
+                )
         return v
 
 
-# --------------------------------------------------------------------------- corporate
+# ------------------------------ корпоративные настройки
 
 _ARTIFACT_URI_RE = re.compile(
     r"^(hdfs://[\w.-]*(:\d+)?/\S+|hdfs:/\S+|viewfs://\S+|file:///\S+|/\S+|~/\S+|https://\S+)$"
@@ -405,7 +411,7 @@ ARCHIVE_FORMATS = ("zip", "tar.gz", "tar", "dir", "file")
 def validate_artifact_uri(uri: str) -> str:
     if not _ARTIFACT_URI_RE.match(uri) or any(c in uri for c in "\n\r\0"):
         raise ValueError(
-            f"artifact URI {uri!r} must be hdfs://, viewfs://, https://, file:// "
+            f"URI артефакта {uri!r} должен быть hdfs://, viewfs://, https://, file:// "
             "or an absolute path"
         )
     return uri
@@ -427,7 +433,9 @@ class ArtifactRef(Strict):
     @classmethod
     def _sha(cls, v: str | None) -> str | None:
         if v is not None and not re.fullmatch(r"[0-9a-f]{64}", v):
-            raise ValueError("sha256 must be a 64-char lowercase hex digest")
+            raise ValueError(
+                "sha256 должен содержать 64 шестнадцатеричных символа в нижнем регистре"
+            )
         return v
 
     @property
@@ -447,7 +455,7 @@ class ArtifactRef(Strict):
 
 
 class EngineArtifact(ArtifactRef):
-    # Path of llama-server / the venv root inside the archive; discovered when omitted.
+    # Путь к llama-server или venv внутри архива; без настройки определяется автоматически.
     path: str | None = None
 
 
@@ -462,18 +470,20 @@ class CorporateConfig(Strict):
     hdfs: HdfsConfig = Field(default_factory=HdfsConfig)
     env: dict[str, str] = Field(default_factory=dict)
     trusted_git_hosts: list[str] = Field(default_factory=list)
-    models: dict[str, ArtifactRef] = Field(default_factory=dict)  # "model:variant" -> artifact
+    models: dict[str, ArtifactRef] = Field(default_factory=dict)  # модель:вариант → артефакт
     engines: dict[str, EngineArtifact] = Field(default_factory=dict)  # llama.cpp | vllm
-    tools: dict[str, ArtifactRef] = Field(default_factory=dict)  # uv | node archives
+    tools: dict[str, ArtifactRef] = Field(default_factory=dict)  # архивы uv или Node.js
 
     @field_validator("env")
     @classmethod
     def _env(cls, v: dict[str, str]) -> dict[str, str]:
         for k in v:
             if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", k):
-                raise ValueError(f"invalid environment variable name {k!r}")
+                raise ValueError(f"неверное имя переменной окружения {k!r}")
             if re.search(r"(TOKEN|SECRET|PASSWORD|API_KEY)", k):
-                raise ValueError(f"{k}: secrets must not be stored in configuration")
+                raise ValueError(
+                    f"{k}: уберите секрет из YAML; используйте окружение или файл токена"
+                )
         return v
 
     @field_validator("engines")
@@ -481,7 +491,7 @@ class CorporateConfig(Strict):
     def _engines(cls, v: dict[str, EngineArtifact]) -> dict[str, EngineArtifact]:
         for k in v:
             if k not in ENGINE_NAMES:
-                raise ValueError(f"unknown engine {k!r}")
+                raise ValueError(f"неизвестный движок {k!r}")
         return v
 
     @property
@@ -489,7 +499,7 @@ class CorporateConfig(Strict):
         return bool(self.env or self.models or self.engines or self.tools)
 
 
-# --------------------------------------------------------------------------- loading
+# --------------------------------------------------------------------------- загрузка
 
 
 def deep_merge(base: Any, override: Any) -> Any:
@@ -501,9 +511,9 @@ def deep_merge(base: Any, override: Any) -> Any:
     return override
 
 
-# Catalog files: an entry defined in a later layer replaces the earlier entry as a
-# whole (overriding the npm `qwen-code` recipe with a git fork must not inherit
-# `package:`). Settings files are deep-merged.
+# В каталогах запись более позднего слоя заменяет раннюю запись целиком:
+# Git-форк qwen-code при замене npm-рецепта не должен наследовать
+# package. Обычные настройки объединяются рекурсивно.
 _CATALOG_KEYS = {
     "models.yaml": "models",
     "harnesses.yaml": "harnesses",
@@ -526,7 +536,7 @@ _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
 def expand_path(value: str, env: dict[str, str] | None = None) -> Path:
-    """Expand ``${VAR:-default}``, ``$VAR`` and ``~`` in a configured path."""
+    """Подставить ${VAR:-default}, $VAR и ~ в путь из настроек."""
     env = os.environ if env is None else env
 
     def sub(m: re.Match[str]) -> str:
@@ -549,7 +559,7 @@ def builtin_config_dir() -> Path:
 
 
 def setup_work_home() -> Path | None:
-    """One persistent root (e.g. on NFS) for settings, data, state, bin and caches."""
+    """Общий постоянный каталог настроек, данных, состояния, инструментов и кэшей."""
     env = os.environ.get("SETUP_WORK_HOME")
     return Path(env).expanduser() if env else None
 
@@ -569,32 +579,63 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
-        raise ConfigError(f"{path}: invalid YAML: {e}") from e
+        raise ConfigError(f"{path}: неверный YAML: {e}") from e
     if data is None:
         return {}
     if not isinstance(data, dict):
-        raise ConfigError(f"{path}: top level must be a mapping")
+        raise ConfigError(f"{path}: верхний уровень YAML должен содержать пары ключ: значение")
     return data
 
 
 def _fmt_validation(path: str, err: ValidationError) -> str:
-    lines = [f"{path}: {err.error_count()} validation error(s)"]
+    lines = [f"{path}: {err.error_count()} ошибок конфигурации"]
     for e in err.errors():
         loc = ".".join(str(p) for p in e["loc"])
-        lines.append(f"  - {loc}: {e['msg']}")
+        kind = e["type"]
+        expected = {
+            "int_parsing": "требуется целое число",
+            "int_type": "требуется целое число",
+            "float_parsing": "требуется число",
+            "float_type": "требуется число",
+            "string_type": "требуется строка",
+            "missing": "заполните обязательное поле",
+            "extra_forbidden": "неизвестное поле; проверьте имя ключа",
+            "dict_type": "требуется набор пар ключ: значение",
+            "list_type": "требуется список",
+            "bool_parsing": "требуется true или false",
+            "bool_type": "требуется true или false",
+        }
+        if isinstance(e.get("input"), str) and "CHANGE-ME" in e["input"]:
+            detail = "замените CHANGE-ME реальным значением в этом поле"
+        elif kind == "literal_error":
+            detail = f"допустимые значения: {e.get('ctx', {}).get('expected', '')}"
+        elif kind in ("greater_than", "greater_than_equal", "less_than", "less_than_equal"):
+            ctx = e.get("ctx", {})
+            relation, key = {
+                "greater_than": ("больше", "gt"),
+                "greater_than_equal": ("не меньше", "ge"),
+                "less_than": ("меньше", "lt"),
+                "less_than_equal": ("не больше", "le"),
+            }[kind]
+            detail = f"значение должно быть {relation} {ctx.get(key)}"
+        elif kind == "value_error":
+            detail = str(e.get("ctx", {}).get("error", "неверное значение"))
+        else:
+            detail = expected.get(kind, "неверный тип или значение; сверьте поле с образцом")
+        lines.append(f"  - {loc}: {detail}")
     return "\n".join(lines)
 
 
 class Config:
-    """Loaded, validated, layered configuration."""
+    """Загруженная и проверенная конфигурация с учётом слоёв."""
 
     def __init__(self, builtin_dir: Path | None = None, user_dir: Path | None = None) -> None:
         self.builtin_dir = builtin_dir or builtin_config_dir()
         self.user_dir = user_dir or user_config_dir()
         if not (self.builtin_dir / "defaults.yaml").is_file():
             raise ConfigError(
-                f"configuration directory {self.builtin_dir} has no defaults.yaml",
-                hint="set SETUP_WORK_CONFIG_DIR to the repository's config/ directory",
+                f"каталог настроек {self.builtin_dir} не содержит defaults.yaml",
+                hint="задайте SETUP_WORK_CONFIG_DIR с путём к config/ репозитория",
             )
         self.sources: dict[str, list[Path]] = {}
         self.raw: dict[str, dict[str, Any]] = {}
@@ -633,7 +674,7 @@ class Config:
         return self._parse("corporate.yaml", CorporateConfig)
 
     def validate_all(self) -> list[str]:
-        """Return a list of problems (empty when everything is valid)."""
+        """Вернуть список ошибок; пустой список означает успешную проверку."""
         problems: list[str] = []
         for attr in ("defaults", "models", "harnesses", "corporate"):
             try:
@@ -646,10 +687,10 @@ class Config:
             mid, _, vid = ref.partition(":")
             spec = self.models.models.get(mid)
             if spec is None or not vid or spec.variant(vid) is None:
-                problems.append(f"corporate.models: {ref!r} is not a catalog model:variant")
+                problems.append(f"corporate.models: {ref!r} отсутствует в models.yaml")
         return problems
 
-    # Resolved paths -------------------------------------------------------------
+    # итоговые пути -------------------------------------------------------------
 
     @property
     def data_dir(self) -> Path:

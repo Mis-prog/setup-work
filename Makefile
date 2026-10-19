@@ -9,9 +9,8 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
-# SETUP_WORK_HOME: one persistent folder (e.g. on NFS) for settings, registries, bin,
-# models, engines, harnesses and caches. Set it once with `make init SETUP_WORK_HOME=…`,
-# then `. $SETUP_WORK_HOME/env.sh` in every new shell / container.
+# SETUP_WORK_HOME — постоянный каталог реестров, инструментов, моделей и кэшей.
+# Создайте env.sh через make init и подключайте его в каждом новом shell.
 export SETUP_WORK_HOME
 UV ?= $(shell command -v uv 2>/dev/null || echo "$(if $(SETUP_WORK_HOME),$(SETUP_WORK_HOME)/bin,$(HOME)/.local/bin)/uv")
 CLI := $(UV) run --no-sync --quiet setup-work
@@ -57,7 +56,7 @@ endif
 
 define require
 	@if [ -z "$$SETUP_WORK_$(2)" ]; then \
-		echo "error: $(1) is required, e.g. make $@ $(1)=$(3)" >&2; exit 2; fi
+		echo "ошибка: укажите $(1), например make $@ $(1)=$(3)" >&2; exit 2; fi
 endef
 
 .PHONY: help init registries bootstrap sync doctor hardware hardware-json version \
@@ -90,7 +89,7 @@ bootstrap: ## registries → uv → окружение проекта → Node.j
 
 sync: $(VENV_STAMP) ## Пересобрать окружение проекта (uv sync через корпоративный PyPI)
 
-# uv.lock records pypi.org; bootstrap.sh re-resolves it against the index in uv.toml.
+# bootstrap.sh перепривязывает uv.lock к корпоративному индексу из uv.toml.
 $(VENV_STAMP): uv.lock pyproject.toml
 	@sh scripts/bootstrap.sh --sync-only
 
@@ -121,7 +120,7 @@ model-remove: $(VENV_STAMP) ## Удалить распакованную мод�
 
 zip-join: ## Склеить части архива (.zip, .z01, …) после подтверждения: ZIP=префикс|файл.zip|папка [OUT=]
 	@if [ -z "$(ZIP)" ]; then \
-		echo "error: ZIP is required, e.g. make $@ ZIP=/data/Qwen3.8-Flash" >&2; exit 2; fi
+		echo "ошибка: укажите ZIP, например make $@ ZIP=/data/Qwen3.8-Flash" >&2; exit 2; fi
 	@python3 scripts/join_zip.py "$(ZIP)" $(if $(OUT),-o "$(OUT)") $(if $(filter 1,$(ZIP_LAST)),--zip-last)
 
 engine-install: $(VENV_STAMP) ## Установить движок: ENGINE=llama.cpp|vllm

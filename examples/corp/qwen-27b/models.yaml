@@ -1,0 +1,71 @@
+# ШАБЛОН: замените ВСЕ активные CHANGE-ME перед make config-validate.
+# Числа архитектуры не определяются по названию модели: возьмите их из config.json
+# соответствующей модели (иногда из text_config) или метаданных GGUF.
+# Плейсхолдеры намеренно не проходят проверку схемы, чтобы не использовать
+# выдуманные параметры при оценке памяти и запуске.
+#
+# Названия qwen3.8 и qwen3.6 сохранены со слов пользователя.
+# Для первых двух архивов предполагается полный комплект safetensors + tokenizer.
+# full — локальное имя неквантованного варианта, а не обозначение dtype.
+# size_gb — сумма размеров ФАЙЛОВ ВЕСОВ в байтах / 1_000_000_000, не размер ZIP.
+# source — резервный источник; corporate.yaml имеет приоритет. При смене HDFS-пути
+# поправьте его в обоих файлах.
+
+models:
+  qwen3.8-27b:
+    family: qwen3.8
+    display_name: Qwen3.8 27B
+    license: CHANGE-ME-license
+    architecture: CHANGE-ME-dense-or-moe
+    parameters_b: 27 # Номинал из названия; уточните по описанию вашей модели.
+    workloads: [general, coding, agents]
+    context_length: CHANGE-ME-max-position-embeddings
+    attention:
+      num_layers: CHANGE-ME-num-hidden-layers
+      num_attention_heads: CHANGE-ME-num-attention-heads
+      num_kv_heads: CHANGE-ME-num-key-value-heads
+      head_dim: CHANGE-ME-head-dim
+    # Если architecture: moe, добавьте реальные значения:
+    # active_parameters_b: ...
+    # moe: {num_experts: ..., experts_per_token: ...}
+    variants:
+      - id: full
+        format: safetensors
+        dtype: CHANGE-ME-bf16-or-fp16-or-fp32
+        source: hdfs:///ml/models/hf/qwen3.8-27b.zip
+        size_gb: CHANGE-ME-full-weight-size-gb
+        engines: [vllm]
+
+      - id: awq
+        format: safetensors
+        quantization: awq
+        # dtype здесь — тип активаций, не 4-битный тип весов.
+        dtype: CHANGE-ME-bf16-or-fp16
+        source: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
+        size_gb: CHANGE-ME-awq-weight-size-gb
+        engines: [vllm]
+
+  qwen3.6-27b:
+    family: qwen3.6
+    display_name: Qwen3.6 27B GGUF Q4_K_M
+    license: CHANGE-ME-license
+    architecture: CHANGE-ME-dense-or-moe
+    parameters_b: 27 # Номинал из названия; уточните по описанию вашей модели.
+    workloads: [general, coding, agents]
+    context_length: CHANGE-ME-max-position-embeddings
+    attention:
+      num_layers: CHANGE-ME-num-hidden-layers
+      num_attention_heads: CHANGE-ME-num-attention-heads
+      num_kv_heads: CHANGE-ME-num-key-value-heads
+      head_dim: CHANGE-ME-head-dim
+    # Для MoE дополнительно нужны active_parameters_b и moe, как выше.
+    variants:
+      - id: q4_k_m
+        format: gguf
+        quantization: q4_k_m
+        source: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
+        # Подходит для одного GGUF или полного комплекта шардов одной модели.
+        # Если в ZIP несколько квантов, замените на точное имя/шаблон Q4_K_M.
+        files: ["*.gguf"]
+        size_gb: CHANGE-ME-gguf-weight-size-gb
+        engines: [llama.cpp]

@@ -1,12 +1,9 @@
-"""Tool and engine installers (plan first, then execute).
+"""Установка инструментов и движков: сначала план, затем выполнение.
 
-* uv and Node.js archives come from corporate.yaml `tools`, llama.cpp / vLLM builds
-  from `engines` (HDFS, NFS or internal HTTPS). Tool archives are checked against the
-  sha256 pinned in defaults.yaml. Nothing is fetched from public hosts.
-* Python is never downloaded (there is no mirror): it must be installed on the machine.
-* Everything is unpacked into ``data_dir`` and linked into ``bin_dir``
-  (default ``~/.local/bin``). No system packages, no sudo, no shell-profile edits.
-"""
+Источники uv/Node.js задаются в corporate.yaml: tools, движков — в engines.
+Архивы инструментов сверяются с SHA256 из defaults.yaml. Python должен быть
+установлен заранее. Файлы распаковываются в data_dir, ссылки создаются в bin_dir.
+Системные пакеты, sudo и профили shell не используются."""
 
 from __future__ import annotations
 
@@ -27,7 +24,7 @@ BOOTSTRAP_TOOLS = ["uv", "python", "node"]
 @dataclass
 class ToolPlan:
     tool: str
-    status: str  # satisfied | install | manual | unsupported
+    status: str  # Статусы: satisfied, install, manual, unsupported.
     steps: list[Step] = field(default_factory=list)
     detail: str = ""
 
@@ -48,16 +45,16 @@ def uv_target() -> str:
     system, arch = _platform()
     a = {"arm64": "aarch64", "x86_64": "x86_64"}.get(arch)
     if a is None:
-        raise UnsupportedError(f"no pinned uv build for architecture {arch}")
+        raise UnsupportedError(f"нет закреплённой сборки uv для архитектуры {arch}")
     if system == "Darwin":
         return f"{a}-apple-darwin"
     if system == "Linux":
         if _is_musl():
             raise UnsupportedError(
-                "musl libc (e.g. Alpine) has no pinned uv build in defaults.yaml"
+                "для musl libc, например Alpine, нет закреплённой сборки uv в config/defaults.yaml"
             )
         return f"{a}-unknown-linux-gnu"
-    raise UnsupportedError(f"unsupported OS {system}")
+    raise UnsupportedError(f"неподдерживаемая ОС {system}")
 
 
 def node_target() -> tuple[str, str]:
@@ -65,7 +62,7 @@ def node_target() -> tuple[str, str]:
     a = {"arm64": "arm64", "x86_64": "x64"}.get(arch)
     s = {"Darwin": "darwin", "Linux": "linux"}.get(system)
     if not a or not s:
-        raise UnsupportedError(f"no pinned Node.js build for {system}/{arch}")
+        raise UnsupportedError(f"нет закреплённой сборки Node.js для {system}/{arch}")
     return f"{s}-{a}", "tar.gz" if s == "darwin" else "tar.xz"
 
 
@@ -77,28 +74,35 @@ def _archive_steps(
     bins: dict[str, str],
     target: str = "",
 ) -> list[Step]:
-    """fetch (corporate) -> extract -> link each `bins` entry (link name -> path inside)."""
+    """Загрузить корпоративный архив, распаковать и создать ссылки для записей bins."""
     version = cfg.defaults.tools[tool].version
     corp = cfg.corporate.tools.get(tool)
     if corp is None:
         raise NotFoundError(
-            f"no corporate source configured for {tool}",
-            hint=f"add tools.{tool}.uri to corporate.yaml (see examples/corp/corporate.yaml)",
+            f"не задан корпоративный источник для {tool}",
+            hint=f"заполните tools.{tool}.uri в config/corporate.yaml",
         )
     sha = corp.sha256 or sha
     if not sha:
-        raise UnsupportedError(f"no pinned sha256 for {tool} target {target}")
+        raise UnsupportedError(f"нет закреплённого SHA256 для {tool} для платформы {target}")
     root = cfg.tools_dir / tool / version
     archive = cfg.tools_dir / "downloads" / archive_name
     uri = corp.uri.format(version=version, target=target, name=archive_name)
     ref = corp.model_copy(update={"uri": uri, "format": "file"})
     steps = [
-        Step("fetch", f"fetch {tool} {version}", artifact=ref, dest=archive, sha256=sha, cfg=cfg),
-        Step("extract", f"unpack {tool} into {root}", src=archive, dest=root),
+        Step(
+            "fetch", f"загрузить {tool} {version}", artifact=ref, dest=archive, sha256=sha, cfg=cfg
+        ),
+        Step("extract", f"распаковать {tool} в {root}", src=archive, dest=root),
     ]
     for link, rel in bins.items():
         steps.append(
-            Step("link", f"link {link} into {cfg.bin_dir}", src=root / rel, dest=cfg.bin_dir / link)
+            Step(
+                "link",
+                f"создать ссылку {link} в {cfg.bin_dir}",
+                src=root / rel,
+                dest=cfg.bin_dir / link,
+            )
         )
     return steps
 
@@ -132,14 +136,14 @@ def plan_node(cfg: Config) -> list[Step]:
 
 
 def plan_python(cfg: Config) -> list[Step]:
-    """Python is never downloaded (no corporate mirror): it must come with the machine."""
+    """Python не скачивается: он должен быть заранее установлен на машине."""
     version = cfg.defaults.tools.get("python")
     v = version.version if version else "3.12"
     return [
         Step(
             "manual",
-            f"install Python {v} on this machine (system package or ask the admins); "
-            "setup-work and uv do not download interpreters",
+            f"установите Python {v} через системный пакет или администратора; "
+            "setup-work и uv не скачивают интерпретаторы",
         )
     ]
 
@@ -148,7 +152,8 @@ def plan_tools(cfg: Config, tools: list[str], *, force: bool = False) -> list[To
     for t in tools:
         if t not in BOOTSTRAP_TOOLS:
             raise UsageError(
-                f"unknown tool {t!r}", hint=f"known tools: {', '.join(BOOTSTRAP_TOOLS)}"
+                f"неизвестный инструмент {t!r}",
+                hint=f"доступные инструменты: {', '.join(BOOTSTRAP_TOOLS)}",
             )
     env = detect_environment(cfg, ["python", "uv", "node", "npm"])
     plans: list[ToolPlan] = []
@@ -166,42 +171,46 @@ def _plan_one(cfg: Config, env: Environment, t: str, force: bool) -> ToolPlan:
     st = env.tool(t) or detect_tool(t, cfg)
     if t == "uv":
         if st.installed and not force:
-            return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
-        return ToolPlan(t, "install", plan_uv(cfg), "corporate archive, sha256-verified")
+            return ToolPlan(t, "satisfied", detail=f"{st.version} по пути {st.path}")
+        return ToolPlan(t, "install", plan_uv(cfg), "корпоративный архив с проверкой SHA256")
     if t == "python":
         if st.installed and st.satisfies and not force:
-            return ToolPlan(t, "satisfied", detail=f"{st.version} at {st.path}")
-        return ToolPlan(t, "manual", plan_python(cfg), "Python must be preinstalled")
+            return ToolPlan(t, "satisfied", detail=f"{st.version} по пути {st.path}")
+        return ToolPlan(t, "manual", plan_python(cfg), "Python должен быть установлен заранее")
     if t == "node":
         node = env.tool("node")
         if node and node.installed and node.satisfies and not force:
-            return ToolPlan(t, "satisfied", detail=f"{node.version} at {node.path}")
+            return ToolPlan(t, "satisfied", detail=f"{node.version} по пути {node.path}")
         why = (
-            f"found {node.version}, need >= {cfg.defaults.tools['node'].min_version}"
+            f"найдена версия {node.version}, требуется >= {cfg.defaults.tools['node'].min_version}"
             if node and node.installed
-            else "not installed"
+            else "не установлен"
         )
-        return ToolPlan(t, "install", plan_node(cfg), f"{why}; corporate archive, sha256-verified")
-    raise UsageError(f"unknown tool {t}")
+        return ToolPlan(
+            t, "install", plan_node(cfg), f"{why}; корпоративный архив с проверкой SHA256"
+        )
+    raise UsageError(f"неизвестный инструмент {t}")
 
 
-# ------------------------------------------------------------------ engines
+# ------------------------------------------------------------------ движки
 
 
 def plan_engine(cfg: Config, engine: str, hw: HardwareInfo) -> tuple[list[Step], list[str]]:
-    """Install an engine from its corporate artifact (corporate.yaml `engines`)."""
+    """Установить движок из артефакта, указанного в corporate.yaml: engines."""
     if engine not in ("llama.cpp", "vllm"):
-        raise UsageError(f"unknown engine {engine!r}", hint="llama.cpp or vllm")
+        raise UsageError(f"неизвестный движок {engine!r}", hint="укажите llama.cpp или vllm")
     art = cfg.corporate.engines.get(engine)
     if art is None:
         raise NotFoundError(
-            f"no corporate artifact configured for {engine}",
-            hint=f"add engines['{engine}'].uri to corporate.yaml "
-            "(see examples/corp/corporate.yaml)",
+            f"не задан корпоративный артефакт для {engine}",
+            hint=f"заполните engines['{engine}'].uri в config/corporate.yaml",
         )
-    notes = [f"using corporate artifact {art.uri}"]
+    notes = [f"используется корпоративный артефакт {art.uri}"]
     if engine == "vllm" and (hw.os.system != "Linux" or hw.accelerator != "nvidia"):
-        notes.append("this machine is not Linux + NVIDIA: vLLM will not be able to serve here")
+        notes.append(
+            "для управляемого запуска vLLM нужна Linux-машина с "
+            "NVIDIA GPU; на этой машине используйте подходящий движок"
+        )
     return plan_engine_artifact(cfg, engine, art), notes
 
 
@@ -209,7 +218,7 @@ def path_hint(cfg: Config) -> str:
     return f'export PATH="{cfg.bin_dir}:$PATH"'
 
 
-# ------------------------------------------------------- corporate engine artifacts
+# ------------------------------------------------------- корпоративные артефакты движков
 
 
 def _activate_llama(cfg: Config, dest: Path, art: EngineArtifact) -> None:
@@ -219,8 +228,11 @@ def _activate_llama(cfg: Config, dest: Path, art: EngineArtifact) -> None:
     binary = dest / art.path if art.path else find_one(dest, "llama-server")
     if binary is None or not binary.is_file():
         raise SetupWorkError(
-            f"no llama-server found in {dest}",
-            hint="set corporate.engines['llama.cpp'].path to the binary inside the archive",
+            f"llama-server не найден в {dest}",
+            hint=(
+                "задайте engines.llama.cpp.path в config/corporate.yaml: "
+                "путь к llama-server относительно корня архива"
+            ),
         )
     for f in binary.parent.iterdir():
         if f.is_file() and f.name.startswith("llama-"):
@@ -262,29 +274,29 @@ def _find_interpreter(version: str, home: str | None, cfg: Config) -> Path | Non
 
 
 def repair_venv(venv: Path, cfg: Config, runner: Runner) -> list[str]:
-    """Make a venv unpacked from a plain zip usable on this machine.
+    """Подготовить распакованное venv к работе на этой машине.
 
-    Fixes the base interpreter (pyvenv.cfg `home` + bin/python* links) and rewrites
-    absolute shebangs of bin/ scripts to the new location. Returns notes.
-    """
+    Исправить home в pyvenv.cfg, ссылки bin/python* и строки запуска скриптов bin/."""
     notes: list[str] = []
     pv = venv / "pyvenv.cfg"
     if not pv.is_file():
-        raise SetupWorkError(f"{venv} is not a virtualenv (no pyvenv.cfg)")
+        raise SetupWorkError(
+            f"{venv}: нет pyvenv.cfg; проверьте engines.vllm.path в corporate.yaml"
+        )
     meta = _read_pyvenv(pv)
     full = meta.get("version_info") or meta.get("version") or ""
     version = ".".join(full.split(".")[:2])
     if not version:
-        raise SetupWorkError(f"cannot read the Python version from {pv}")
+        raise SetupWorkError(f"не удалось определить версию Python по файлу {pv}")
     py = venv / "bin" / "python"
     if not _python_works(py):
         interp = _find_interpreter(version, meta.get("home"), cfg)
         if interp is None:
             raise UnsupportedError(
-                f"the vLLM venv was built with Python {version} (home={meta.get('home')}), "
-                "which is not installed on this machine",
-                hint=f"install Python {version} here (system package / admins) or rebuild the "
-                "venv zip with the Python version the machines have",
+                f"окружение vLLM собрано с Python {version} (home={meta.get('home')}), "
+                "который не установлен на этой машине",
+                hint=f"установите Python {version} через администратора либо пересоберите "
+                "архив venv под установленную версию Python",
             )
         lines = pv.read_text(encoding="utf-8").splitlines()
         lines = [
@@ -296,9 +308,9 @@ def repair_venv(venv: Path, cfg: Config, runner: Runner) -> list[str]:
             if link.exists() or link.is_symlink():
                 link.unlink()
             link.symlink_to(interp)
-        notes.append(f"re-linked venv interpreter to {interp}")
+        notes.append(f"интерпретатор venv перепривязан к {interp}")
         if not _python_works(py):
-            raise SetupWorkError(f"{py} still does not start after re-linking to {interp}")
+            raise SetupWorkError(f"{py} по-прежнему не запускается после перепривязки к {interp}")
     rewritten = 0
     new_shebang = f"#!{venv / 'bin' / 'python'}"
     for f in (venv / "bin").iterdir():
@@ -316,7 +328,7 @@ def repair_venv(venv: Path, cfg: Config, runner: Runner) -> list[str]:
             f.write_text(new_shebang + "\n" + rest, encoding="utf-8")
             rewritten += 1
     if rewritten:
-        notes.append(f"rewrote {rewritten} script shebang(s) in {venv / 'bin'}")
+        notes.append(f"исправлено {rewritten} строк запуска скриптов в {venv / 'bin'}")
     return notes
 
 
@@ -338,30 +350,30 @@ def plan_engine_artifact(cfg: Config, engine: str, art: EngineArtifact) -> list[
     if engine == "llama.cpp":
         dest = cfg.engines_dir / "llama.cpp" / "corporate"
         return [
-            Step("artifact", "llama.cpp (corporate build)", artifact=art, dest=dest, cfg=cfg),
+            Step("artifact", "llama.cpp (корпоративная сборка)", artifact=art, dest=dest, cfg=cfg),
             Step(
                 "call",
-                "locate llama-server and point engines/llama.cpp/current at it",
+                "найти llama-server и создать ссылку engines/llama.cpp/current",
                 action=lambda r: _activate_llama(cfg, dest, art),
             ),
             Step(
                 "command",
-                "verify llama-server runs",
+                "проверить запуск llama-server",
                 argv=[str(cfg.engines_dir / "llama.cpp" / "current" / "llama-server"), "--version"],
             ),
         ]
     dest = cfg.engines_dir / "vllm" / "corporate"
     py = cfg.engines_dir / "vllm" / "current" / "bin" / "python"
     return [
-        Step("artifact", "vLLM venv (corporate)", artifact=art, dest=dest, cfg=cfg),
+        Step("artifact", "venv vLLM из корпоративного архива", artifact=art, dest=dest, cfg=cfg),
         Step(
             "call",
-            "repair the unpacked venv and point engines/vllm/current at it",
+            "исправить пути venv и создать ссылку engines/vllm/current",
             action=lambda r: _activate_vllm(cfg, dest, art, r),
         ),
         Step(
             "command",
-            "verify vLLM imports",
+            "проверить импорт vLLM",
             argv=[str(py), "-c", "import vllm; print('vllm', vllm.__version__)"],
             timeout=900,
         ),

@@ -1,15 +1,9 @@
-"""Memory estimation primitives.
+"""Оценка памяти в байтах.
 
-All results are estimates in bytes. The model is deliberately explicit so every
-number in a recommendation can be explained:
-
-* weights   = exact artifact size from the catalog (what is loaded), divided across
-              tensor-parallel shards plus a small replication overhead;
-* KV cache  = 2 (K and V) x layers x kv_heads x head_dim x bytes/element x tokens,
-              where sliding-window layers only cache ``min(tokens, window)`` tokens and
-              KV heads are replicated when the TP degree exceeds the KV-head count;
-* overhead  = fixed per-device runtime cost (CUDA context, graphs, activations).
-"""
+Учитываются веса с распределением по GPU, KV-кэш и накладные расходы.
+KV-кэш: 2 × слои × KV-головы × размер головы × байты элемента × токены.
+Для скользящего окна число токенов ограничивается размером окна.
+При TP больше числа KV-голов головы реплицируются."""
 
 from __future__ import annotations
 
@@ -22,11 +16,11 @@ GiB = 1024**3
 
 KV_BYTES_PER_ELEMENT = {"fp32": 4.0, "fp16": 2.0, "bf16": 2.0, "fp8": 1.0, "q8_0": 34 / 32}
 
-# Relative quality retained by each weight format (ordering only, not a benchmark).
+# Оценка сохранения качества для ранжирования форматов, не результат бенчмарка.
 QUANT_QUALITY = {
     "none": 1.00,
     "f16": 1.00,
-    "mxfp4": 1.00,  # gpt-oss is released natively in MXFP4
+    "mxfp4": 1.00,  # gpt-oss изначально выпущен в MXFP4
     "fp8": 0.99,
     "q8_0": 0.99,
     "q6_k": 0.97,
@@ -35,7 +29,7 @@ QUANT_QUALITY = {
     "q4_k_m": 0.92,
 }
 
-# Replicated tensors (embeddings, norms) when sharding weights across GPUs.
+# Репликация эмбеддингов и нормализаций при распределении весов по GPU.
 TP_REPLICATION_OVERHEAD = 0.02
 
 
@@ -44,7 +38,7 @@ def gib(n: float | int | None) -> str:
 
 
 def kv_heads_per_shard(num_kv_heads: int, tp: int) -> int:
-    """vLLM shards KV heads across TP ranks and replicates them when tp > heads."""
+    """vLLM распределяет KV-головы по TP и реплицирует их, если TP больше числа голов."""
     return max(1, math.ceil(num_kv_heads / tp))
 
 
@@ -55,7 +49,7 @@ def kv_cache_bytes(
     cache_dtype: str = "fp16",
     tp: int = 1,
 ) -> int:
-    """KV cache for `concurrency` sequences of `context` tokens, per TP shard."""
+    """KV-кэш для concurrency последовательностей по context токенов на одну долю TP."""
     if context <= 0 or concurrency <= 0:
         return 0
     per_layer_token = (
@@ -73,7 +67,7 @@ def kv_cache_bytes(
 def max_context_for_budget(
     att: Attention, kv_budget: float, concurrency: int, cache_dtype: str, tp: int = 1
 ) -> int:
-    """Largest per-sequence context whose KV cache fits in `kv_budget` bytes."""
+    """Максимальный контекст одной последовательности при заданном бюджете KV-кэша."""
     if kv_budget <= 0:
         return 0
     lo, hi = 0, 1 << 22

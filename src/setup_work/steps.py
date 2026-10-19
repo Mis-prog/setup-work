@@ -1,15 +1,8 @@
-"""Plan/execute primitives: every installer first builds a list of Steps.
+"""План установки и его выполнение.
 
-A plan can be printed (``--dry-run``), serialised (``--json``) and executed.
-Only the step kinds below exist; there is intentionally no "run this shell
-snippet" step.
-
-* ``command``   run an argv list (optionally in a directory, with extra env)
-* ``download``  fetch a URL to a file and verify its sha256 before use
-* ``extract``   unpack a verified archive with path-traversal protection
-* ``link``      create/refresh a symlink inside bin_dir (never overwrites foreign files)
-* ``manual``    an instruction the user must perform (privileged or interactive)
-"""
+План можно вывести через --dry-run или --json. Шаги: command — команда argv,
+download — загрузка с SHA256, extract — безопасная распаковка, link — ссылка,
+manual — инструкция для ручного выполнения. Произвольный код shell не используется."""
 
 from __future__ import annotations
 
@@ -58,24 +51,24 @@ class Step:
     destructive: bool = False
     timeout: float | None = None
     when: Callable[[], bool] | None = field(default=None, repr=False)
-    artifact: Any = field(default=None, repr=False)  # config.ArtifactRef for artifact/fetch
-    action: Callable[[Runner], None] | None = field(default=None, repr=False)  # for "call"
-    mode: int | None = None  # file mode for "write"
-    cfg: Any = field(default=None, repr=False)  # config.Config for artifact/fetch steps
+    artifact: Any = field(default=None, repr=False)  # config.ArtifactRef для шагов artifact/fetch
+    action: Callable[[Runner], None] | None = field(default=None, repr=False)  # для шага call
+    mode: int | None = None  # права файла для шага write
+    cfg: Any = field(default=None, repr=False)  # config.Config для шагов artifact/fetch
 
     def render(self) -> str:
         if self.kind == "command" and self.argv:
-            return format_argv(self.argv) + (f"   (in {self.cwd})" if self.cwd else "")
+            return format_argv(self.argv) + (f"   (в {self.cwd})" if self.cwd else "")
         if self.kind == "extract":
-            return f"extract {self.src} -> {self.dest}"
+            return f"распаковать {self.src} -> {self.dest}"
         if self.kind == "link":
             return f"ln -sfn {self.src} {self.dest}"
         if self.kind == "remove":
-            return f"remove {self.dest}"
+            return f"удалить {self.dest}"
         if self.kind == "write":
-            return f"write {self.dest}"
+            return f"записать {self.dest}"
         if self.kind in ("artifact", "fetch") and self.artifact is not None:
-            return f"fetch {self.artifact.uri} -> {self.dest}"
+            return f"загрузить {self.artifact.uri} -> {self.dest}"
         return self.description
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,9 +90,9 @@ def sha256_file(path: Path) -> str:
 
 
 def download_verified(url: str, dest: Path, sha256: str, timeout: float = 120) -> Path:
-    """Download (honouring HTTP(S)_PROXY / NO_PROXY) and verify before moving into place."""
+    """Загрузить с учётом прокси и проверить перед перемещением на место."""
     if not url.startswith("https://"):
-        raise SetupWorkError(f"refusing non-HTTPS download: {url}")
+        raise SetupWorkError(f"загрузка разрешена только по HTTPS: {url}")
     if dest.exists() and sha256_file(dest) == sha256:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -111,9 +104,8 @@ def download_verified(url: str, dest: Path, sha256: str, timeout: float = 120) -
         got = sha256_file(Path(tmp))
         if got != sha256:
             raise SetupWorkError(
-                f"checksum mismatch for {url}\n  expected {sha256}\n  got      {got}",
-                hint="the download was discarded; check proxies/mirrors or update the pinned "
-                "digest",
+                f"не совпадает SHA256 для {url}\n  ожидается {sha256}\n  получено {got}",
+                hint="файл удалён; проверьте прокси, зеркало и закреплённую контрольную сумму",
             )
         os.replace(tmp, dest)
     finally:
@@ -125,7 +117,7 @@ def download_verified(url: str, dest: Path, sha256: str, timeout: float = 120) -
 def _safe_member(base: Path, name: str) -> Path:
     target = (base / name).resolve()
     if not str(target).startswith(str(base.resolve()) + os.sep) and target != base.resolve():
-        raise SetupWorkError(f"archive member escapes destination: {name}")
+        raise SetupWorkError(f"путь в архиве выходит за пределы каталога распаковки: {name}")
     return target
 
 
@@ -136,7 +128,7 @@ def safe_extract(archive: Path, dest: Path) -> None:
         with zipfile.ZipFile(archive) as zf:
             for info in zf.infolist():
                 _safe_member(dest, info.filename)
-            zf.extractall(dest)  # noqa: S202 - members validated above
+            zf.extractall(dest)  # noqa: S202 - элементы архива проверены выше
             for info in zf.infolist():
                 mode = (info.external_attr >> 16) & 0o777
                 if mode:
@@ -151,16 +143,17 @@ def safe_extract(archive: Path, dest: Path) -> None:
                 )
                 _safe_member(dest, os.path.relpath(link_target, dest))
             if m.isdev():
-                raise SetupWorkError(f"archive contains a device file: {m.name}")
+                raise SetupWorkError(f"в архиве недопустимый файл устройства: {m.name}")
         if hasattr(tarfile, "data_filter"):
             tf.extractall(dest, filter="data")
         else:  # pragma: no cover - Python < 3.11.4
-            tf.extractall(dest)  # noqa: S202 - members validated above
+            tf.extractall(dest)  # noqa: S202 - элементы архива проверены выше
 
 
 def make_link(src: Path, dest: Path, managed_root: Path) -> None:
-    """Symlink dest -> src. Existing non-symlinks, or links pointing outside
-    setup-work's managed directories, are never replaced."""
+    """Создать ссылку dest на src.
+
+    Чужие файлы и ссылки за пределы управляемых каталогов не заменяются."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_symlink():
         current = Path(os.readlink(dest))
@@ -168,34 +161,39 @@ def make_link(src: Path, dest: Path, managed_root: Path) -> None:
             current = dest.parent / current
         if not str(current.resolve(strict=False)).startswith(str(managed_root.resolve())):
             raise SetupWorkError(
-                f"{dest} already links to {current}, which setup-work does not manage",
-                hint="remove it yourself if you want setup-work to manage this binary",
+                f"{dest} уже ссылается на {current}, которым setup-work не управляет",
+                hint=(
+                    "проверьте ссылку и удалите её вручную, "
+                    "если нужно передать управление setup-work"
+                ),
             )
         dest.unlink()
     elif dest.exists():
         raise SetupWorkError(
-            f"{dest} exists and is not a symlink; refusing to overwrite",
-            hint="move it away or set paths.bin_dir to another directory",
+            f"{dest} существует и не является символьной ссылкой; перезапись отменена",
+            hint="переместите файл либо задайте другой paths.bin_dir в config/defaults.yaml",
         )
     dest.symlink_to(src)
 
 
 def _need(*values: object) -> None:
     if not all(values):
-        raise SetupWorkError("internal error: incomplete installation step")
+        raise SetupWorkError("внутренняя ошибка: неполный шаг установки")
 
 
 def execute(steps: list[Step], runner: Runner, managed_root: Path) -> None:
     for i, step in enumerate(steps, 1):
         if step.when is not None and not step.when():
-            runner.info(f"[dim]{i}/{len(steps)} skip:[/] {step.description} (already satisfied)")
+            runner.info(f"[dim]{i}/{len(steps)} skip:[/] {step.description}(уже выполнено)")
             continue
         runner.info(f"[bold]{i}/{len(steps)}[/] {step.description}")
         if step.kind == "manual":
-            runner.info(f"  [yellow]manual action required:[/] {step.render()}")
+            runner.info(f"  [yellow]требуется действие вручную:[/] {step.render()}")
             continue
         if step.privileged:
-            runner.require_confirmation(f"Run privileged command: {step.render()} ?")
+            runner.require_confirmation(
+                f"Выполнить команду с повышенными правами: {step.render()} ?"
+            )
         elif step.confirm:
             runner.require_confirmation(f"Run: {step.render()} ?")
         if step.destructive:
@@ -250,9 +248,9 @@ def _run_special(step: Step, runner: Runner) -> None:
             cfg, step.artifact, step.dest, runner, name=step.description, keep_archive_default=False
         )
         return
-    # fetch: bring an installer archive into the download cache under its pinned name
+    # fetch: сохранить установочный архив в кэш под закреплённым именем
     if step.dest.exists() and step.sha256 and sha256_file(step.dest) == step.sha256:
-        runner.info(f"  using cached {step.dest.name}")
+        runner.info(f"  используется кэш {step.dest.name}")
         return
     got = artifacts.fetch_archive(cfg, step.artifact, runner, name=step.dest.name)
     if runner.dry_run:
@@ -265,7 +263,7 @@ def _run_special(step: Step, runner: Runner) -> None:
     want = step.artifact.sha256 or step.sha256
     if want and sha256_file(step.dest) != want:
         step.dest.unlink()
-        raise SetupWorkError(f"checksum mismatch for {step.artifact.uri} (expected {want})")
+        raise SetupWorkError(f"не совпадает SHA256 для {step.artifact.uri}(ожидается {want})")
 
 
 def ensure_executable(path: Path) -> None:

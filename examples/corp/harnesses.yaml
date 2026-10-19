@@ -16,13 +16,13 @@
 #   make harness-doctor NAME=qwen-code
 
 harnesses:
-  # Upstream: QwenLM/qwen-code — npm workspaces, bin scripts/cli-entry.js, Node >= 22.
+  # Исходный проект: QwenLM/qwen-code — рабочие пространства npm, bin scripts/cli-entry.js, Node >= 22.
   # Перекрывает встроенный рецепт qwen-code (npm-пакет) внутренним форком.
   qwen-code:
     description: Qwen Code (внутренний форк)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/qwen-code.git
-    ref: CHANGE-ME          # тег или commit SHA
+    ref: CHANGE-ME          # тег или SHA коммита
     install:
       method: none
       build:
@@ -35,7 +35,7 @@ harnesses:
       optional: [OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL]
     verify: [qwen, --version]
 
-  # Upstream: anomalyco/opencode — Bun monorepo, CLI: packages/cli/src/index.ts.
+  # Исходный проект: anomalyco/opencode — монорепозиторий Bun, CLI: packages/cli/src/index.ts.
   opencode:
     description: OpenCode (внутренний форк)
     source: git
@@ -52,7 +52,7 @@ harnesses:
       optional: [OPENAI_BASE_URL, OPENAI_API_KEY]
     verify: [opencode, --version]
 
-  # Upstream: badlogic/pi-mono — npm workspaces, bin packages/coding-agent/dist/bundle/cli.js,
+  # Исходный проект: badlogic/pi-mono — рабочие пространства npm, bin packages/coding-agent/dist/bundle/cli.js,
   # Node >= 22.19.
   pi:
     description: pi coding agent (внутренний форк)
@@ -69,7 +69,7 @@ harnesses:
     requires: {node: ">=22.19"}
     verify: [pi, --version]
 
-  # Upstream: NousResearch/hermes-agent — Python (>=3.11,<3.15), console script `hermes`.
+  # Исходный проект: NousResearch/hermes-agent — Python (>=3.11,<3.15), команда запуска `hermes`.
   hermes:
     description: Hermes Agent (внутренний форк)
     source: git
@@ -89,7 +89,7 @@ harnesses:
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/deepseek-agent.git
     ref: CHANGE-ME
-    # Вариант A — Python-пакет с console script:
+    # Вариант A — Python-пакет с команда запуска:
     install: {method: uv, python: "3.12"}
     binaries: [deepseek]
     # Вариант B — Node/TypeScript:
@@ -111,6 +111,6 @@ harnesses:
     description: SkillHub (внутренний репозиторий навыков)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/skillhub.git
-    ref: CHANGE-ME          # тег или commit SHA
+    ref: CHANGE-ME          # тег или SHA коммита
     install:
       method: none          # ничего не собирается, только checkout

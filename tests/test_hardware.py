@@ -29,7 +29,9 @@ def test_parse_nvidia_smi_with_compute_cap():
     gpus = parse_nvidia_smi_csv(NVSMI_CC, with_cc=True)
     assert len(gpus) == 2
     assert gpus[0].memory_total_bytes == 81920 * 1024**2
-    assert gpus[1].memory_free_bytes == 1024 * 1024**2  # busy GPU: per-device free tracked
+    assert (
+        gpus[1].memory_free_bytes == 1024 * 1024**2
+    )  # занятый GPU: свободная память учитывается по каждому устройству
     assert gpus[0].compute_capability == "8.0"
     assert gpus[0].compute_capability_source == "nvidia-smi"
 
@@ -63,7 +65,7 @@ def test_precisions_by_compute_capability():
 
 
 def fake_probe(table):
-    """Return canned output for the longest matching argv prefix."""
+    """Вернуть готовый ответ для наиболее длинного совпавшего префикса аргументов."""
 
     def run(argv):
         for k, out in sorted(table.items(), key=lambda kv: -len(kv[0])):
@@ -105,7 +107,7 @@ def test_detect_nvidia_retries_without_compute_cap():
 
     gpus, driver, cuda, notes = hwmod.detect_nvidia(run)
     assert gpus[0].compute_capability == "7.0"
-    assert any("inferred" in n for n in notes)
+    assert any("определено по имени" in n for n in notes)
 
 
 def test_detect_linux_cpu_only(monkeypatch):
@@ -124,7 +126,7 @@ def test_detect_linux_cpu_only(monkeypatch):
     assert hw.memory.total_bytes == 32000000 * 1024
     assert hw.cpu.physical_cores == 2
     assert hw.os.distro == "Ubuntu 24.04 LTS"
-    assert any("CPU-only" in n for n in hw.notes)
+    assert any("на CPU" in n for n in hw.notes)
 
 
 def test_cgroup_limit_used(monkeypatch):
@@ -148,7 +150,7 @@ def test_parse_meminfo_and_vm_stat():
 
 def test_metal_working_set():
     ws, src = metal_working_set(24 * GiB, "0")
-    assert ws == int(24 * GiB * 0.67) and "estimated" in src
+    assert ws == int(24 * GiB * 0.67) and "оценка" in src
     ws, _ = metal_working_set(64 * GiB, None)
     assert ws == int(64 * GiB * 0.75)
     ws, src = metal_working_set(64 * GiB, "57344")
@@ -158,7 +160,7 @@ def test_metal_working_set():
 def test_aggregate_vram_is_not_a_pool(hw_v100):
     assert hw_v100.total_vram_bytes == 64 * GiB
     d = hw_v100.to_dict()
-    assert "not a shared memory pool" in d["summary"]["total_vram_note"]
+    assert "не общий пул" in d["summary"]["total_vram_note"]
     assert d["summary"]["min_compute_capability"] == 7.0
 
 

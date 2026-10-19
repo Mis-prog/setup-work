@@ -65,7 +65,7 @@ def test_fp8_native_on_ada_weight_only_on_ampere(cfg, hw_4090, hw_a100x4):
 
 
 def test_multi_gpu_tensor_parallel_needed_for_large_bf16(cfg, hw_a100x4):
-    spec, bf16 = resolve(cfg, "qwen3-32b:bf16")  # 65.5 GB of weights
+    spec, bf16 = resolve(cfg, "qwen3-32b:bf16")  # 65,5 GB весов
     single, _ = evaluate_variant(
         cfg, "qwen3-32b", spec, bf16, "vllm", hw_a100x4, RecommendRequest(context=32768)
     )
@@ -82,12 +82,11 @@ def test_multi_gpu_tensor_parallel_needed_for_large_bf16(cfg, hw_a100x4):
     assert cand is not None
     assert cand.tensor_parallel == 2
     assert cand.layout == "multi-gpu"
-    assert cand.weights_bytes < bf16.bytes  # per-shard weights
+    assert cand.weights_bytes < bf16.bytes  # веса на одну долю
 
 
 def test_weights_that_fit_are_not_enough(cfg, hw_4090):
-    """Qwen3-14B q8_0 weights (15.7 GB) fit in 24 GB, but not with a 32k KV cache + overhead
-    at concurrency 4."""
+    """Веса Qwen3-14B q8_0 помещаются в 24 GB, но KV-кэш 32k и четыре запроса уже не помещаются."""
     spec, q8 = resolve(cfg, "qwen3-14b:q8_0")
     ok, _ = evaluate_variant(
         cfg, "qwen3-14b", spec, q8, "llama.cpp", hw_4090, RecommendRequest(context=4096)
@@ -110,15 +109,15 @@ def test_moe_memory_uses_total_parameters(cfg, hw_4090):
     cand, _ = evaluate_variant(
         cfg, "qwen3-30b-a3b", spec, q4, "llama.cpp", hw_4090, RecommendRequest(context=8192)
     )
-    assert cand.weights_bytes == q4.bytes  # all experts are loaded
-    assert any("all experts" in r for r in cand.rationale)
+    assert cand.weights_bytes == q4.bytes  # загружены все эксперты
+    assert any("все эксперты" in r for r in cand.rationale)
 
 
 def test_context_beyond_native_rejected(cfg, hw_a100x4):
     res = rec(cfg, hw_a100x4, task="coding", context=200_000)
     ids = {c.model_id for c in res.candidates}
     assert ids <= {"qwen3-coder-30b-a3b"}
-    assert any("native context" in why for r in res.rejections for why in r.reasons)
+    assert any("поддерживаемый контекст" in why for r in res.rejections for why in r.reasons)
 
 
 def test_embedding_task_only_returns_embedding_models(cfg, hw_cpu):
@@ -150,11 +149,11 @@ def test_heterogeneous_layer_split_for_llama_cpp(cfg, hw_mixed):
     )
     assert cand.layout == "multi-gpu"
     assert cand.tensor_split and abs(sum(cand.tensor_split) - 1) < 0.01
-    assert cand.tensor_split[0] > cand.tensor_split[1]  # A100 gets the larger share
+    assert cand.tensor_split[0] > cand.tensor_split[1]  # A100 получает большую долю
 
 
 def test_explicit_tp_must_divide_heads(cfg, hw_a100x4):
-    spec, bf16 = resolve(cfg, "qwen2.5-coder-7b:bf16")  # 28 attention heads
+    spec, bf16 = resolve(cfg, "qwen2.5-coder-7b:bf16")  # 28 голов внимания
     cand, why = evaluate_variant(
         cfg,
         "qwen2.5-coder-7b",
@@ -173,7 +172,7 @@ def test_unknown_task_and_model(cfg, hw_cpu):
         rec(cfg, hw_cpu, task="poetry")
     with pytest.raises(NotFoundError):
         resolve(cfg, "nope-1b")
-    with pytest.raises(NotFoundError, match="no variant"):
+    with pytest.raises(NotFoundError, match="не имеет варианта"):
         resolve(cfg, "qwen3-8b:q2_k")
 
 

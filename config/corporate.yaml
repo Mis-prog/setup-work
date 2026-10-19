@@ -1,17 +1,42 @@
-# Where setup-work takes tools, engines and model weights from. Nothing is downloaded
-# from public hosts. Empty here: put your values into ~/.config/setup-work/corporate.yaml
-# (`make init` creates it from examples/corp/corporate.yaml).
-#
-# hdfs:              how to read hdfs:// URIs (`hdfs dfs -get`, Kerberos ticket check)
-# env:               non-secret environment for every command setup-work runs
-# trusted_git_hosts: harness builds from these hosts do not need --allow-build
-# models / engines / tools: artifact sources
+# Источники инструментов, движков и весов моделей в корпоративной сети.
+# Поправьте URI HDFS и пути внутри ZIP. Пользовательский слой имеет приоритет.
+# hdfs — клиент кластера и проверка Kerberos; env — несекретные переменные.
+# trusted_git_hosts — хосты с разрешёнными командами сборки харнессов.
+# models, engines и tools — источники соответствующих артефактов.
 
 hdfs:
   cli: hdfs
   kerberos: auto
 env: {}
-trusted_git_hosts: []
-models: {}
-engines: {}
-tools: {}
+# Замените на хост из repository в config/harnesses.yaml, без https:// и пути.
+# Команды сборки из рецептов этого хоста разрешены без ALLOW_BUILD=1.
+trusted_git_hosts:
+  - CHANGE-ME-bitbucket-host
+# Примерные пути: замените на реальные. Описание моделей — в config/models.yaml.
+models:
+  "qwen3.8-27b:full":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b.zip
+    # sha256: добавьте 64-символьный SHA256 архива при необходимости
+  "qwen3.8-27b:awq":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
+  "qwen3.6-27b:q4_k_m":
+    uri: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
+
+engines:
+  llama.cpp:
+    uri: hdfs:///ml/engines/llama.cpp.zip
+    # Путь к бинарнику внутри ZIP с исходниками и готовым build/.
+    # Если в корне архива сразу src/ и build/, укажите build/bin/llama-server.
+    path: llama.cpp/build/bin/llama-server
+  vllm:
+    uri: hdfs:///ml/engines/vllm.zip
+    # Каталог внутри ZIP с pyvenv.cfg, bin/ и lib/.
+    path: vllm-venv
+
+# Готовые архивы инструментов под версии и SHA256 из config/defaults.yaml.
+# Если инструмент подходящей версии уже установлен, архив не требуется.
+tools:
+  uv:
+    uri: hdfs:///ml/tools/uv/{name}
+  node:
+    uri: hdfs:///ml/tools/node/node-v{version}-{target}.tar.xz

@@ -1,10 +1,7 @@
-# setup-work global defaults.
-#
-# Override any value by creating ~/.config/setup-work/defaults.yaml (or the file
-# pointed to by $SETUP_WORK_USER_CONFIG_DIR/defaults.yaml). Mappings are merged
-# key by key; lists and scalars are replaced.
-#
-# Paths support "~" and environment variables. XDG_* variables are honoured.
+# Общие настройки setup-work.
+# Переопределения: defaults.yaml в SETUP_WORK_USER_CONFIG_DIR или стандартном
+# пользовательском каталоге. Словари объединяются по ключам, списки заменяются.
+# В путях поддерживаются ~, переменные окружения и настройки XDG.
 
 paths:
   data_dir: ${XDG_DATA_HOME:-~/.local/share}/setup-work
@@ -14,12 +11,12 @@ paths:
 inference:
   host: 127.0.0.1
   port: 8000
-  # Fraction of each GPU vLLM is allowed to pre-allocate.
+  # Доля памяти каждого GPU, которую vLLM может занять заранее.
   gpu_memory_utilization: 0.90
-  # Memory that must remain free on every device after loading (GiB).
+  # Запас свободной памяти каждого устройства после загрузки, GiB.
   vram_safety_margin_gb: 1.0
-  # Fixed runtime overhead per device (GiB): CUDA context, CUDA graphs,
-  # activation buffers, NCCL workspace, compute buffers. These are estimates.
+  # Оценка накладных расходов на устройство, GiB: контекст и графы CUDA,
+  # активации, рабочая память NCCL и вычислительные буферы.
   runtime_overhead_gb:
     vllm: 2.0
     llama.cpp: 0.6
@@ -31,16 +28,15 @@ recommend:
   default_context: 8192
   default_concurrency: 1
   max_results: 5
-  # RAM to leave for the OS and other processes (GiB).
+  # Запас RAM для ОС и остальных процессов, GiB.
   ram_safety_margin_gb: 4.0
 
 downloads:
-  # Ask for confirmation before downloading more than this many GiB.
+  # Порог объёма загрузки, после которого запрашивается подтверждение, GB.
   confirm_above_gb: 1.0
 
-# Pinned user-space tools. The archives come from corporate.yaml `tools` (HDFS, NFS
-# or internal HTTPS mirrors of the official release files); every archive is checked
-# against the sha256 below (taken from the official release pages, 2026-10-15).
+# Закреплённые версии инструментов. Архивы берутся из tools в corporate.yaml.
+# Контрольные суммы исходных записей сверялись с официальными выпусками 2026-10-15.
 tools:
   uv:
     version: 0.12.13

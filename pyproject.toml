@@ -51,9 +51,9 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 ignore = [
-    "S603",   # subprocess without shell: all calls use argv lists by design
-    "S607",   # partial executable path: tools are resolved from PATH intentionally
-    "B008",   # typer.Option in defaults is the Typer idiom
+    "S603",   # подпроцессы без shell, аргументы передаются списком
+    "S607",   # инструменты намеренно ищутся через PATH
+    "B008",   # typer.Option в значениях параметров — соглашение Typer
     "RUF001", "RUF002", "RUF003",
 ]
 

@@ -1,9 +1,7 @@
-"""Corporate environment: `corporate.yaml` env and a read-only status for `doctor`.
+"""Корпоративное окружение из corporate.yaml и диагностика для doctor.
 
-pip, npm and uv are configured by `make registries` (scripts/bootstrap.sh), which
-writes pip.conf, .npmrc and uv.toml. Each tool then reads its own file, so nothing
-has to be bridged here.
-"""
+make registries записывает pip.conf, uv.toml и npmrc; инструменты самостоятельно
+читают эти файлы."""
 
 from __future__ import annotations
 
@@ -23,7 +21,7 @@ def _config_home() -> Path:
 
 
 def pip_index() -> str | None:
-    """index-url from pip.conf (later files win, PIP_INDEX_URL wins over all)."""
+    """Прочитать index-url; более поздние файлы и PIP_INDEX_URL имеют приоритет."""
     if os.environ.get("PIP_INDEX_URL"):
         return os.environ["PIP_INDEX_URL"]
     files = [
@@ -46,7 +44,7 @@ def pip_index() -> str | None:
 
 
 def uv_index() -> str | None:
-    """Default index from uv's user config (uv.toml) or UV_DEFAULT_INDEX."""
+    """Определить основной индекс uv из uv.toml или UV_DEFAULT_INDEX."""
     if os.environ.get("UV_DEFAULT_INDEX"):
         return os.environ["UV_DEFAULT_INDEX"]
     f = Path(os.environ.get("UV_CONFIG_FILE") or _config_home() / "uv" / "uv.toml")
@@ -61,7 +59,7 @@ def uv_index() -> str | None:
 
 
 def registry_env() -> dict[str, str]:
-    """With SETUP_WORK_HOME, pip/uv/npm config and caches live there (survive containers)."""
+    """При SETUP_WORK_HOME настройки и кэши pip/uv/npm сохраняются в общем каталоге."""
     home = setup_work_home()
     if home is None:
         return {}
@@ -76,13 +74,13 @@ def registry_env() -> dict[str, str]:
 
 
 def apply_environment(cfg: Config) -> None:
-    """Export `corporate.yaml` env for every subprocess (variables you set win)."""
-    os.environ.setdefault("UV_PYTHON_DOWNLOADS", "never")  # there is no Python mirror
+    """Применить env из corporate.yaml, сохраняя приоритет заданного окружения."""
+    os.environ.setdefault("UV_PYTHON_DOWNLOADS", "never")  # зеркало Python не предусмотрено
     for k, v in registry_env().items():
         os.environ.setdefault(k, v)
     try:
         env = cfg.corporate.env
-    except Exception:  # invalid corporate.yaml is reported by `config validate`
+    except Exception:  # ошибки corporate.yaml покажет config validate
         return
     for k, v in env.items():
         os.environ.setdefault(k, os.path.expandvars(os.path.expanduser(v)))
@@ -93,7 +91,7 @@ def mask(value: str) -> str:
 
 
 def status(cfg: Config) -> dict[str, Any]:
-    """Read-only snapshot for `doctor`."""
+    """Собрать сведения для doctor без изменения настроек."""
     from .artifacts import kerberos_ok
 
     corp = cfg.corporate

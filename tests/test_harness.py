@@ -43,9 +43,9 @@ def test_pypi_install_uses_dedicated_venv(cfg, no_req):
 
 
 def test_version_override_validated(cfg, no_req):
-    with pytest.raises(Exception, match="invalid version"):
+    with pytest.raises(Exception, match="неверная версия"):
         hz.plan_install(cfg, "aider", version="1.0; rm -rf ~")
-    with pytest.raises(UsageError, match="REF applies"):
+    with pytest.raises(UsageError, match="REF применяется"):
         hz.plan_install(cfg, "aider", ref="main")
 
 
@@ -67,10 +67,10 @@ harnesses:
     plan = hz.plan_install(cfg, "custom-agent")
     clone = plan.steps[0]
     assert clone.argv[1:4] == ["clone", "--no-checkout", "--filter=blob:none"]
-    assert clone.argv[4] == "--"  # URL can never be parsed as an option
+    assert clone.argv[4] == "--"  # URL не должен разбираться как параметр команды
     assert clone.env["GIT_TERMINAL_PROMPT"] == "0"
     assert plan.needs_confirmation
-    assert any("build code" in w for w in plan.warnings)
+    assert any("код сборки" in w for w in plan.warnings)
     assert plan.steps[-1].src.name == "agent" and ".venv" in str(plan.steps[-1].src)
 
 
@@ -104,7 +104,7 @@ def test_unknown_harness(cfg):
 
 
 def test_install_remove_cycle_with_local_source(tmp_path, monkeypatch, no_req):
-    """End-to-end with a `local` + `none` recipe: link, manifest, doctor, remove."""
+    """Полный цикл локального рецепта: ссылка, манифест, диагностика и удаление."""
     src = tmp_path / "myagent"
     src.mkdir()
     exe = src / "myagent"
@@ -136,19 +136,19 @@ harnesses:
     monkeypatch.setenv("PATH", f"{cfg.bin_dir}:{__import__('os').environ['PATH']}")
     report = hz.doctor(cfg, "myagent")
     checks = {c: ok for c, ok, _ in report.checks}
-    assert checks["verify command"] is True
-    assert checks["env MYAGENT_TOKEN"] is False  # required variable missing
+    assert checks["проверочная команда"] is True
+    assert checks["переменная MYAGENT_TOKEN"] is False  # отсутствует обязательная переменная
     assert not report.ok
     monkeypatch.setenv("MYAGENT_TOKEN", "x")
     assert hz.doctor(cfg, "myagent").ok
-    assert all(d != "x" for _, _, d in hz.doctor(cfg, "myagent").checks)  # value never shown
+    assert all(d != "x" for _, _, d in hz.doctor(cfg, "myagent").checks)  # значение не выводится
 
     steps = hz.plan_remove(cfg, "myagent")
     assert steps[-1].destructive
-    with pytest.raises(Exception, match="confirmation required"):
+    with pytest.raises(Exception, match="требуется подтверждение"):
         execute(steps, Runner(interactive=False), cfg.data_dir)
     execute(steps, runner, cfg.data_dir)
-    assert not link.exists() and exe.exists()  # local source itself untouched
+    assert not link.exists() and exe.exists()  # исходный локальный каталог не изменяется
 
 
 def test_list_reports_pinning(cfg):

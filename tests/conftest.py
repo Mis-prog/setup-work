@@ -14,7 +14,7 @@ HW_DIR = ROOT / "examples" / "hardware"
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
-    """Every test gets private data/state/bin/config dirs; nothing touches $HOME."""
+    """У каждого теста свои каталоги данных и настроек; HOME пользователя не изменяется."""
     for var in ("SETUP_WORK_HARDWARE_FILE", "SETUP_WORK_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     for k in list(__import__("os").environ):
