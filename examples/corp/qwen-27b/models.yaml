@@ -1,71 +1,76 @@
-# ШАБЛОН: замените ВСЕ активные CHANGE-ME перед make config-validate.
-# Числа архитектуры не определяются по названию модели: возьмите их из config.json
-# соответствующей модели (иногда из text_config) или метаданных GGUF.
-# Плейсхолдеры намеренно не проходят проверку схемы, чтобы не использовать
-# выдуманные параметры при оценке памяти и запуске.
-#
-# Названия qwen3.8 и qwen3.6 сохранены со слов пользователя.
-# Для первых двух архивов предполагается полный комплект safetensors + tokenizer.
-# full — локальное имя неквантованного варианта, а не обозначение dtype.
-# size_gb — сумма размеров ФАЙЛОВ ВЕСОВ в байтах / 1_000_000_000, не размер ZIP.
-# source — резервный источник; corporate.yaml имеет приоритет. При смене HDFS-пути
-# поправьте его в обоих файлах.
+# Проверенные параметры трёх моделей Qwen 27B. Источники — в README.md рядом.
+# Поправьте только source под ваши HDFS-архивы; corporate.yaml имеет приоритет.
 
 models:
+  # ---------------------------------------------------------------------------
+  # Проверено по config.json, индексам весов и API Hugging Face 2026-10-19.
+  # Источники и ревизии: examples/corp/qwen-27b/README.md.
+  # HDFS-пути оставлены корпоративными; repository — справочная ссылка.
+  # Обе архитектуры гибридные: 64 слоя = 48 Gated DeltaNet + 16 полного внимания.
+  # num_layers хранит реальное число слоёв. Текущая формула памяти считает все
+  # слои обычными KV-слоями: оценка для этих моделей приближённая, не точная.
+  # size_gb — сумма размеров файлов весов в десятичных GB, без архива.
+  # ---------------------------------------------------------------------------
   qwen3.8-27b:
     family: qwen3.8
     display_name: Qwen3.8 27B
-    license: CHANGE-ME-license
-    architecture: CHANGE-ME-dense-or-moe
-    parameters_b: 27 # Номинал из названия; уточните по описанию вашей модели.
-    workloads: [general, coding, agents]
-    context_length: CHANGE-ME-max-position-embeddings
+    license: apache-2.0
+    architecture: dense
+    # Полный комплект safetensors включает языковую модель, vision и MTP.
+    parameters_b: 27.781427952
+    workloads: [general, coding, reasoning, agents]
+    tags: [hybrid-attention, vision-language, memory-estimate-approximate]
+    context_length: 262144
     attention:
-      num_layers: CHANGE-ME-num-hidden-layers
-      num_attention_heads: CHANGE-ME-num-attention-heads
-      num_kv_heads: CHANGE-ME-num-key-value-heads
-      head_dim: CHANGE-ME-head-dim
-    # Если architecture: moe, добавьте реальные значения:
-    # active_parameters_b: ...
-    # moe: {num_experts: ..., experts_per_token: ...}
+      num_layers: 64
+      num_attention_heads: 24
+      num_kv_heads: 4
+      head_dim: 256
     variants:
       - id: full
         format: safetensors
-        dtype: CHANGE-ME-bf16-or-fp16-or-fp32
+        dtype: bf16
+        repository: Qwen/Qwen3.8-27B
         source: hdfs:///ml/models/hf/qwen3.8-27b.zip
-        size_gb: CHANGE-ME-full-weight-size-gb
+        # 18 файлов safetensors; размеры включают заголовки файлов.
+        size_gb: 55.563006776
         engines: [vllm]
 
       - id: awq
         format: safetensors
         quantization: awq
-        # dtype здесь — тип активаций, не 4-битный тип весов.
-        dtype: CHANGE-ME-bf16-or-fp16
+        # Веса INT4, активации BF16; quant_method в config.json: compressed-tensors.
+        # Сохраните исходный config.json в HDFS-архиве: vLLM определяет метод по нему.
+        dtype: bf16
+        repository: cyankiwi/Qwen3.8-27B-AWQ-INT4
         source: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
-        size_gb: CHANGE-ME-awq-weight-size-gb
+        # 5 файлов safetensors; не все тензоры модели квантованы в INT4.
+        size_gb: 21.018000928
         engines: [vllm]
+        provenance: community
 
   qwen3.6-27b:
     family: qwen3.6
     display_name: Qwen3.6 27B GGUF Q4_K_M
-    license: CHANGE-ME-license
-    architecture: CHANGE-ME-dense-or-moe
-    parameters_b: 27 # Номинал из названия; уточните по описанию вашей модели.
-    workloads: [general, coding, agents]
-    context_length: CHANGE-ME-max-position-embeddings
+    license: apache-2.0
+    architecture: dense
+    # Число параметров текстовой GGUF-модели по метаданным репозитория Unsloth.
+    parameters_b: 26.895998464
+    workloads: [general, coding, reasoning, agents]
+    tags: [hybrid-attention, memory-estimate-approximate]
+    context_length: 262144
     attention:
-      num_layers: CHANGE-ME-num-hidden-layers
-      num_attention_heads: CHANGE-ME-num-attention-heads
-      num_kv_heads: CHANGE-ME-num-key-value-heads
-      head_dim: CHANGE-ME-head-dim
-    # Для MoE дополнительно нужны active_parameters_b и moe, как выше.
+      num_layers: 64
+      num_attention_heads: 24
+      num_kv_heads: 4
+      head_dim: 256
     variants:
       - id: q4_k_m
         format: gguf
         quantization: q4_k_m
+        repository: unsloth/Qwen3.6-27B-GGUF
         source: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
-        # Подходит для одного GGUF или полного комплекта шардов одной модели.
-        # Если в ZIP несколько квантов, замените на точное имя/шаблон Q4_K_M.
-        files: ["*.gguf"]
-        size_gb: CHANGE-ME-gguf-weight-size-gb
+        files: [Qwen3.6-27B-Q4_K_M.gguf]
+        size_gb: 16.817244384
         engines: [llama.cpp]
+        provenance: community
