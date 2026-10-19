@@ -1,16 +1,12 @@
-# Проверенные параметры трёх моделей Qwen 27B. Источники — в README.md рядом.
-# Поправьте только source под ваши HDFS-архивы; corporate.yaml имеет приоритет.
+# Рабочий каталог: только выбранные модели Qwen 27B, три варианта весов.
+# Источники и ревизии: examples/corp/qwen-27b/README.md.
+# Параметры проверены по config.json и метаданным Hugging Face 2026-10-19.
+# HDFS-пути задаются в corporate.yaml, source ниже — резервный источник.
+# Обе архитектуры гибридные: 64 слоя = 48 Gated DeltaNet + 16 полного внимания.
+# num_layers — реальное число слоёв; текущая оценка KV-памяти приближённая.
+# size_gb — размер файлов весов в десятичных GB, без архива.
 
 models:
-  # ---------------------------------------------------------------------------
-  # Проверено по config.json, индексам весов и API Hugging Face 2026-10-19.
-  # Источники и ревизии: examples/corp/qwen-27b/README.md.
-  # HDFS-пути оставлены корпоративными; repository — справочная ссылка.
-  # Обе архитектуры гибридные: 64 слоя = 48 Gated DeltaNet + 16 полного внимания.
-  # num_layers хранит реальное число слоёв. Текущая формула памяти считает все
-  # слои обычными KV-слоями: оценка для этих моделей приближённая, не точная.
-  # size_gb — сумма размеров файлов весов в десятичных GB, без архива.
-  # ---------------------------------------------------------------------------
   qwen3.8-27b:
     family: qwen3.8
     display_name: Qwen3.8 27B
@@ -31,7 +27,7 @@ models:
         format: safetensors
         dtype: bf16
         repository: Qwen/Qwen3.8-27B
-        source: hdfs:///ml/models/hf/qwen3.8-27b.zip
+        source: hdfs:///ml/models/hf/qwen3.8-27b/
         # 18 файлов safetensors; размеры включают заголовки файлов.
         size_gb: 55.563006776
         engines: [vllm]
@@ -43,7 +39,7 @@ models:
         # Сохраните исходный config.json в HDFS-архиве: vLLM определяет метод по нему.
         dtype: bf16
         repository: cyankiwi/Qwen3.8-27B-AWQ-INT4
-        source: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
+        source: hdfs:///ml/models/hf/qwen3.8-27b-awq/
         # 5 файлов safetensors; не все тензоры модели квантованы в INT4.
         size_gb: 21.018000928
         engines: [vllm]
@@ -69,7 +65,7 @@ models:
         format: gguf
         quantization: q4_k_m
         repository: unsloth/Qwen3.6-27B-GGUF
-        source: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
+        source: hdfs:///ml/models/gguf/Qwen3.6-27B-Q4_K_M.gguf
         files: [Qwen3.6-27B-Q4_K_M.gguf]
         size_gb: 16.817244384
         engines: [llama.cpp]

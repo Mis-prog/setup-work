@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,13 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("SETUP_WORK_BIN_DIR", str(tmp_path / "bin"))
     monkeypatch.setenv("SETUP_WORK_USER_CONFIG_DIR", str(tmp_path / "userconf"))
-    monkeypatch.setenv("SETUP_WORK_CONFIG_DIR", str(ROOT / "config"))
+    builtin = tmp_path / "builtin"
+    builtin.mkdir()
+    shutil.copy2(ROOT / "config/defaults.yaml", builtin / "defaults.yaml")
+    for filename in ("models.yaml", "harnesses.yaml"):
+        shutil.copy2(ROOT / "tests/fixtures" / filename, builtin / filename)
+    (builtin / "corporate.yaml").write_text("{}\n")
+    monkeypatch.setenv("SETUP_WORK_CONFIG_DIR", str(builtin))
     return tmp_path
 
 

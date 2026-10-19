@@ -13,14 +13,17 @@ env: {}
 
 models:
   "qwen3.8-27b:full":
-    uri: hdfs:///ml/models/hf/qwen3.8-27b.zip
-    # sha256: вставьте 64-символьный SHA256 архива, если нужна проверка
+    uri: hdfs:///ml/models/hf/qwen3.8-27b/
+    format: zip-parts
+    # В папке: Qwen_Qwen3.8-27B-1-of-19.zip и остальные части.
 
   "qwen3.8-27b:awq":
-    uri: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
+    uri: hdfs:///ml/models/hf/qwen3.8-27b-awq/
+    format: zip-parts
 
   "qwen3.6-27b:q4_k_m":
-    uri: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
+    uri: hdfs:///ml/models/gguf/Qwen3.6-27B-Q4_K_M.gguf
+    sha256: 5ed60d0af4650a854b1755bd392f9aef4872643dc25a254bc68043fa638392a0
 
 engines:
   llama.cpp:
@@ -34,10 +37,8 @@ engines:
     # Каталог внутри ZIP, в котором находятся pyvenv.cfg, bin/ и lib/.
     path: vllm-venv
 
-# Необязательно, если uv и Node.js уже установлены.
+# Необязательно, если uv уже установлен. Node.js/npm берутся из npm registry.
 # Архивы должны соответствовать версиям и контрольным суммам config/defaults.yaml.
 # tools:
 #   uv:
 #     uri: hdfs:///ml/tools/uv/{name}
-#   node:
-#     uri: hdfs:///ml/tools/node/node-v{version}-{target}.tar.xz

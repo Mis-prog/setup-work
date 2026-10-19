@@ -1,0 +1,84 @@
+# Изолированные данные тестов; не входят в рабочий каталог моделей.
+harnesses:
+  claude-code:
+    description: Anthropic Claude Code agentic coding CLI
+    source: npm
+    package: '@anthropic-ai/claude-code'
+    version: 2.1.285
+    binaries:
+    - claude
+    requires:
+      node: '>=22'
+    environment:
+      optional:
+      - ANTHROPIC_API_KEY
+      - ANTHROPIC_BASE_URL
+      - ANTHROPIC_MODEL
+    verify:
+    - claude
+    - --version
+  codex:
+    description: OpenAI Codex CLI
+    source: npm
+    package: '@openai/codex'
+    version: 0.159.1
+    binaries:
+    - codex
+    requires:
+      node: '>=16'
+    environment:
+      optional:
+      - OPENAI_API_KEY
+      - OPENAI_BASE_URL
+    verify:
+    - codex
+    - --version
+  qwen-code:
+    description: Qwen Code agentic coding CLI (works with any OpenAI-compatible endpoint)
+    source: npm
+    package: '@qwen-code/qwen-code'
+    version: 0.24.7
+    binaries:
+    - qwen
+    requires:
+      node: '>=22'
+    environment:
+      optional:
+      - OPENAI_API_KEY
+      - OPENAI_BASE_URL
+      - OPENAI_MODEL
+    verify:
+    - qwen
+    - --version
+  opencode:
+    description: OpenCode terminal coding agent
+    source: npm
+    package: opencode-ai
+    version: 1.18.33
+    binaries:
+    - opencode
+    environment:
+      optional:
+      - OPENAI_API_KEY
+      - ANTHROPIC_API_KEY
+    verify:
+    - opencode
+    - --version
+  aider:
+    description: Aider AI pair programming in the terminal
+    source: pypi
+    package: aider-chat
+    version: 0.86.2
+    install:
+      method: uv
+      python: '3.12'
+    binaries:
+    - aider
+    environment:
+      optional:
+      - OPENAI_API_KEY
+      - OPENAI_API_BASE
+      - ANTHROPIC_API_KEY
+    verify:
+    - aider
+    - --version

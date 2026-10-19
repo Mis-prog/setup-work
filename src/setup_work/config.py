@@ -420,7 +420,7 @@ def validate_artifact_uri(uri: str) -> str:
 class ArtifactRef(Strict):
     uri: str
     sha256: str | None = None
-    format: Literal["zip", "tar.gz", "tar", "dir", "file"] | None = None
+    format: Literal["zip", "zip-parts", "tar.gz", "tar", "dir", "file"] | None = None
     keep_archive: bool | None = None
     description: str = ""
 

@@ -54,5 +54,5 @@ jobs:
           make recommend TASK=coding HARDWARE=examples/hardware/4x-a100-80gb.json
           make recommend TASK=coding HARDWARE=examples/hardware/cpu-only-32gb.json ENGINE=llama.cpp
           make bootstrap DRY_RUN=1
-          make serve MODEL=qwen3-32b:bf16 ENGINE=vllm PLAN=1 HARDWARE=examples/hardware/4x-a100-80gb.json
+          make serve MODEL=qwen3.8-27b:full ENGINE=vllm PLAN=1 HARDWARE=examples/hardware/4x-a100-80gb.json
 

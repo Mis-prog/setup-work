@@ -141,12 +141,16 @@ def test_plan_uv_from_corporate_source(cfg, monkeypatch):
 
 def test_tools_never_fall_back_to_public_hosts(cfg, monkeypatch):
     monkeypatch.setattr(bs, "_platform", lambda: ("Darwin", "arm64"))
-    for plan in (bs.plan_uv, bs.plan_node):
-        with pytest.raises(NotFoundError, match="не задан корпоративный источник"):
-            plan(cfg)
+    monkeypatch.setenv("NPM_CONFIG_USERCONFIG", str(cfg.user_dir / "npmrc"))
+    for key in ("SETUP_WORK_NPM_REGISTRY", "NPM_CONFIG_REGISTRY", "npm_config_registry"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(NotFoundError, match="не задан корпоративный источник"):
+        bs.plan_uv(cfg)
+    with pytest.raises(NotFoundError, match="npm registry"):
+        bs.plan_node(cfg)
     monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env([]))
     (p,) = bs.plan_tools(cfg, ["node"])
-    assert p.status == "manual" and "tools.node.uri" in p.steps[0].description
+    assert p.status == "manual" and "SETUP_WORK_NPM_REGISTRY" in p.steps[0].description
 
 
 def test_plan_node_targets(cfg, monkeypatch):
@@ -162,6 +166,7 @@ def test_idempotent_when_satisfied(cfg, monkeypatch):
     tools = [
         ToolStatus("uv", True, "0.12.0", "/x/uv"),
         ToolStatus("node", True, "24.1.0", "/n", satisfies=True),
+        ToolStatus("npm", True, "12.2.0", "/npm"),
     ]
     monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env(tools))
     plans = bs.plan_tools(cfg, ["uv", "node"])

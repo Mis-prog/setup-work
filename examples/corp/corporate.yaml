@@ -15,15 +15,16 @@ env: {}
 trusted_git_hosts:
   - CHANGE-ME-bitbucket-host   # без https:// и пути
 
-# Веса моделей: "<id>:<variant>" из каталога (make models) -> zip.
-# В zip: для llama.cpp — .gguf-файл(ы); для vLLM — каталог HF (config.json,
-# *.safetensors, токенизатор). sha256 необязателен (`sha256sum file.zip`).
+# Для vLLM укажите папку с файлами <имя>-1-of-N.zip; для llama.cpp — сам GGUF.
 models:
-  "qwen3-8b:q4_k_m":
-    uri: hdfs:///ml/models/gguf/Qwen3-8B-Q4_K_M.zip
-  "qwen3-coder-30b-a3b:fp8":
-    uri: hdfs:///ml/models/hf/Qwen3-Coder-30B-A3B-Instruct-FP8.zip
-    # sha256: 0123...abcd
+  "qwen3.8-27b:full":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b/
+    format: zip-parts
+  "qwen3.8-27b:awq":
+    uri: hdfs:///ml/models/hf/qwen3.8-27b-awq/
+    format: zip-parts
+  "qwen3.6-27b:q4_k_m":
+    uri: hdfs:///ml/models/gguf/Qwen3.6-27B-Q4_K_M.gguf
 
 # Движки: готовая сборка llama.cpp (llama-server + .so) и venv vLLM, упакованный
 # `zip -r` (собирайте на той версии Python, что стоит на машинах).
@@ -33,10 +34,8 @@ engines:
   vllm:
     uri: hdfs:///ml/engines/vllm-0.30.0-py312-cu128-venv.zip
 
-# Архивы uv и Node.js (официальные файлы; sha256 из defaults.yaml проверяется).
+# Архив uv: sha256 из defaults.yaml проверяется. Node.js/npm — через npm registry.
 # Плейсхолдеры: {version} {target} {name}
 tools:
   uv:
     uri: hdfs:///ml/tools/uv/{name}
-  node:
-    uri: hdfs:///ml/tools/node/node-v{version}-{target}.tar.xz

@@ -465,7 +465,7 @@ def bootstrap_cmd(
     ),
     json_out: bool = _json_opt(),
 ) -> None:
-    """Установить недостающие uv/Node.js из корпоративных архивов и проверить Python."""
+    """Установить uv из архива, Node.js/npm из npm registry и проверить Python."""
     cfg = STATE.cfg
     _set_json(json_out)
     plans = bs.plan_tools(cfg, list(tool) if tool else bs.BOOTSTRAP_TOOLS, force=force)

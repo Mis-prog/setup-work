@@ -1,7 +1,7 @@
 """Установка инструментов и движков: сначала план, затем выполнение.
 
-Источники uv/Node.js задаются в corporate.yaml: tools, движков — в engines.
-Архивы инструментов сверяются с SHA256 из defaults.yaml. Python должен быть
+Node.js и npm берутся из корпоративного npm registry; uv — из corporate.yaml: tools.
+Источники движков задаются в engines. Архивы сверяются с контрольными суммами. Python должен быть
 установлен заранее. Файлы распаковываются в data_dir, ссылки создаются в bin_dir.
 Системные пакеты, sudo и профили shell не используются."""
 
@@ -124,6 +124,21 @@ def plan_uv(cfg: Config) -> list[Step]:
 def plan_node(cfg: Config) -> list[Step]:
     pin = cfg.defaults.tools["node"]
     target, ext = node_target()
+    if "node" not in cfg.corporate.tools:
+        from . import node_registry
+
+        if target.startswith("linux-") and _is_musl():
+            raise UnsupportedError("для установки Node.js из npm требуется Linux с glibc")
+        node_version, npm_version = node_registry.versions(cfg)
+        registry = node_registry.read_registry(cfg)
+        package = "node-bin-darwin-arm64" if target == "darwin-arm64" else f"node-{target}"
+        return [
+            Step(
+                "call",
+                f"установить {package}@{node_version} и npm@{npm_version} из {registry.url}",
+                action=lambda runner: node_registry.install(cfg, registry, package, target, runner),
+            )
+        ]
     inner = f"node-v{pin.version}-{target}/bin"
     return _archive_steps(
         cfg,
@@ -179,15 +194,22 @@ def _plan_one(cfg: Config, env: Environment, t: str, force: bool) -> ToolPlan:
         return ToolPlan(t, "manual", plan_python(cfg), "Python должен быть установлен заранее")
     if t == "node":
         node = env.tool("node")
-        if node and node.installed and node.satisfies and not force:
+        npm = env.tool("npm")
+        if node and node.installed and node.satisfies and npm and npm.installed and not force:
             return ToolPlan(t, "satisfied", detail=f"{node.version} по пути {node.path}")
-        why = (
-            f"найдена версия {node.version}, требуется >= {cfg.defaults.tools['node'].min_version}"
-            if node and node.installed
-            else "не установлен"
-        )
+        if force:
+            why = "принудительная установка закреплённых версий"
+        elif node and node.installed and node.satisfies:
+            why = "Node.js найден, но npm отсутствует или не запускается"
+        elif node and node.installed:
+            why = (
+                f"найдена версия {node.version}, требуется >= "
+                f"{cfg.defaults.tools['node'].min_version}"
+            )
+        else:
+            why = "Node.js не установлен"
         return ToolPlan(
-            t, "install", plan_node(cfg), f"{why}; корпоративный архив с проверкой SHA256"
+            t, "install", plan_node(cfg), f"{why}; установка Node.js и npm с проверкой целостности"
         )
     raise UsageError(f"неизвестный инструмент {t}")
 

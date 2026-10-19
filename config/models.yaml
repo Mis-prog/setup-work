@@ -27,7 +27,7 @@ models:
         format: safetensors
         dtype: bf16
         repository: Qwen/Qwen3.8-27B
-        source: hdfs:///ml/models/hf/qwen3.8-27b.zip
+        source: hdfs:///ml/models/hf/qwen3.8-27b/
         # 18 файлов safetensors; размеры включают заголовки файлов.
         size_gb: 55.563006776
         engines: [vllm]
@@ -39,7 +39,7 @@ models:
         # Сохраните исходный config.json в HDFS-архиве: vLLM определяет метод по нему.
         dtype: bf16
         repository: cyankiwi/Qwen3.8-27B-AWQ-INT4
-        source: hdfs:///ml/models/hf/qwen3.8-27b-awq.zip
+        source: hdfs:///ml/models/hf/qwen3.8-27b-awq/
         # 5 файлов safetensors; не все тензоры модели квантованы в INT4.
         size_gb: 21.018000928
         engines: [vllm]
@@ -65,7 +65,7 @@ models:
         format: gguf
         quantization: q4_k_m
         repository: unsloth/Qwen3.6-27B-GGUF
-        source: hdfs:///ml/models/gguf/qwen3.6-27b-gguf-Q4_K_M.zip
+        source: hdfs:///ml/models/gguf/Qwen3.6-27B-Q4_K_M.gguf
         files: [Qwen3.6-27B-Q4_K_M.gguf]
         size_gb: 16.817244384
         engines: [llama.cpp]

@@ -33,6 +33,12 @@ case "$op" in
   -du) shift; p=$(printf '%s' "$1" | sed 's#^hdfs://[^/]*##; s#^hdfs:##'); f="$FAKE_HDFS_ROOT$p"
        [ -e "$f" ] || { echo "du: No such file or directory: $1" >&2; exit 1; }
        printf '%s  %s  %s\\n' "$(wc -c < "$f" | tr -d ' ')" 0 "$1" ;;
+  -ls) p=$(printf '%s' "$1" | sed 's#^hdfs://[^/]*##; s#^hdfs:##')
+       for f in "$FAKE_HDFS_ROOT$p"/*; do
+         [ -f "$f" ] || continue
+         size=$(wc -c < "$f")
+         printf '%s 1 user group %s 2026-01-01 00:00 %s/%s\\n' -rw-r--r-- "$size" "$1" "${f##*/}"
+       done ;;
   -get) p=$(printf '%s' "$1" | sed 's#^hdfs://[^/]*##; s#^hdfs:##'); cp "$FAKE_HDFS_ROOT$p" "$2" ;;
   *) echo "unsupported $op" >&2; exit 2 ;;
 esac
@@ -109,11 +115,12 @@ def test_user_config_and_unknown_model_mapping(tmp_path):
 
 def test_example_corp_config_is_valid(monkeypatch):
     monkeypatch.setenv("SETUP_WORK_USER_CONFIG_DIR", str(ROOT / "examples" / "corp"))
+    monkeypatch.setenv("SETUP_WORK_CONFIG_DIR", str(ROOT / "config"))
     cfg = Config()
     assert cfg.validate_all() == []
     qwen = cfg.harnesses.harnesses["qwen-code"]
     assert qwen.source == "git" and qwen.package is None  # запись заменена целиком, без объединения
-    assert "corp-coder-14b" in cfg.models.models and "qwen3-8b" in cfg.models.models
+    assert "corp-coder-14b" in cfg.models.models and "qwen3.8-27b" in cfg.models.models
     with pytest.raises(UsageError, match="CHANGE-ME"):
         hz.plan_install(cfg, "qwen-code")
 

@@ -35,7 +35,7 @@ downloads:
   # Порог объёма загрузки, после которого запрашивается подтверждение, GB.
   confirm_above_gb: 1.0
 
-# Закреплённые версии инструментов. Архивы берутся из tools в corporate.yaml.
+# Закреплённые версии инструментов. Node.js и npm берутся из npm registry.
 # Контрольные суммы исходных записей сверялись с официальными выпусками 2026-10-15.
 tools:
   uv:
@@ -53,6 +53,8 @@ tools:
       darwin-x64: 9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4
       linux-arm64: 5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7
       linux-x64: 2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
+  npm:
+    version: 12.2.0
   python:
     version: "3.12"
 

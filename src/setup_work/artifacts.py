@@ -11,6 +11,7 @@ import contextlib
 import datetime as _dt
 import json
 import os
+import re
 import shutil
 import stat
 import tarfile
@@ -115,6 +116,11 @@ class ArtifactInfo:
 def inspect(cfg: Config, ref: ArtifactRef) -> ArtifactInfo:
     sch = scheme(ref.uri)
     size: int | None = None
+    if ref.effective_format == "zip-parts":
+        parts = zip_parts(cfg, ref)
+        sizes = [inspect(cfg, ArtifactRef(uri=uri, format="file")).size_bytes for uri in parts]
+        size = sum(s for s in sizes if s is not None) if all(s is not None for s in sizes) else None
+        return ArtifactInfo(ref.uri, sch, size, "zip-parts")
     if sch == "hdfs":
         require_kerberos(cfg.corporate.hdfs)
         size = hdfs_size(cfg.corporate.hdfs, ref.uri)
@@ -139,7 +145,115 @@ def read_marker(dest: Path) -> dict[str, Any] | None:
 
 def is_current(dest: Path, ref: ArtifactRef) -> bool:
     m = read_marker(dest)
-    return bool(m and m.get("uri") == ref.uri and m.get("sha256") == ref.sha256)
+    return bool(
+        m
+        and m.get("uri") == ref.uri
+        and m.get("sha256") == ref.sha256
+        and m.get("format", "" if ref.effective_format == "zip-parts" else ref.effective_format)
+        == ref.effective_format
+    )
+
+
+def zip_parts(cfg: Config, ref: ArtifactRef) -> list[str]:
+    """Найти полный комплект <имя>-1-of-N.zip в каталоге, в числовом порядке."""
+    if scheme(ref.uri) == "hdfs":
+        h = cfg.corporate.hdfs
+        require_kerberos(h)
+        result = probe(
+            [hdfs_cli(h), "dfs", *h.extra_args, "-ls", _safe_uri(ref.uri)], timeout=h.timeout_s
+        )
+        if not result.ok:
+            raise NotFoundError(
+                f"не удалось прочитать каталог частей {ref.uri}",
+                hint="проверьте путь models в corporate.yaml, права HDFS и билет Kerberos",
+            )
+        names = [
+            line.split(maxsplit=7)[7].rsplit("/", 1)[-1]
+            for line in result.stdout.splitlines()
+            if line.startswith("-") and len(line.split(maxsplit=7)) == 8
+        ]
+    elif scheme(ref.uri) == "local":
+        folder = local_path(ref.uri)
+        if not folder.is_dir():
+            raise NotFoundError(
+                f"не найден каталог частей {folder}; исправьте uri в corporate.yaml"
+            )
+        names = [p.name for p in folder.iterdir() if p.is_file()]
+    else:
+        raise SetupWorkError("для zip-parts задайте каталог HDFS или локальный каталог")
+    groups: dict[tuple[str, int], dict[int, str]] = {}
+    for filename in names:
+        match = re.fullmatch(r"(.+)-(\d+)-of-(\d+)\.zip", filename, re.IGNORECASE)
+        if not match:
+            continue
+        prefix, number, total = match.groups()
+        index, count = int(number), int(total)
+        group = groups.setdefault((prefix, count), {})
+        if index < 1 or index > count or index in group:
+            raise SetupWorkError(f"неверный или повторяющийся номер части: {filename}")
+        group[index] = filename
+    if len(groups) != 1:
+        raise SetupWorkError(
+            f"в {ref.uri} нужен один комплект <имя>-1-of-N.zip; найдено комплектов: {len(groups)}",
+            hint="укажите отдельную папку одной модели, например с Qwen_Qwen3.8-27B-1-of-19.zip",
+        )
+    (_, count), group = next(iter(groups.items()))
+    missing = [str(n) for n in range(1, count + 1) if n not in group]
+    if missing:
+        raise SetupWorkError(
+            f"в {ref.uri} отсутствуют части: {', '.join(missing)} из {count}",
+            hint="доложите недостающие ZIP-файлы в HDFS и повторите загрузку модели",
+        )
+    return [ref.uri.rstrip("/") + "/" + group[n] for n in range(1, count + 1)]
+
+
+def _independent_zips(parts: list[Path]) -> bool:
+    try:
+        for part in parts:
+            with zipfile.ZipFile(part) as archive:
+                archive.infolist()
+        return True
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def _unpack_parts(parts: list[Path], staging: Path, joined: Path, runner: Runner) -> None:
+    if _independent_zips(parts):
+        seen: dict[str, tuple[int, int]] = {}
+        for part in parts:
+            with zipfile.ZipFile(part) as archive:
+                for member in archive.infolist():
+                    if member.is_dir():
+                        continue
+                    signature = (member.CRC, member.file_size)
+                    key = str(Path(member.filename))
+                    if key in seen and seen[key] != signature:
+                        raise SetupWorkError(f"ZIP-части содержат разные версии файла {key}")
+                    seen[key] = signature
+        required = sum(size for _, size in seen.values())
+        if required + 512 * 1024**2 > _free(staging):
+            raise SetupWorkError(f"недостаточно места для распаковки {gib(required)}")
+        for part in parts:
+            runner.info(f"  распаковка {part.name} ...")
+            safe_unzip(part, staging)
+        return
+    runner.info(f"  сборка {len(parts)} частей ZIP в числовом порядке ...")
+    try:
+        with joined.open("wb") as output:
+            for part in parts:
+                with part.open("rb") as source:
+                    shutil.copyfileobj(source, output, 8 << 20)
+        if uncompressed_size(joined, "zip") + 512 * 1024**2 > _free(staging):
+            raise SetupWorkError("недостаточно места для распаковки собранного ZIP")
+        safe_unzip(joined, staging)
+    except (zipfile.BadZipFile, NotImplementedError) as exc:
+        raise SetupWorkError(
+            "не удалось распаковать ZIP-части",
+            hint="проверьте целостность файлов: нужны отдельные ZIP "
+            "либо последовательные части одного ZIP",
+        ) from exc
+    finally:
+        joined.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------------ распаковка
@@ -164,6 +278,7 @@ def safe_unzip(archive: Path, dest: Path) -> None:
                 _safe_member(dest, os.path.relpath((dest / info.filename).parent / target, dest))
         dest.mkdir(parents=True, exist_ok=True)
         for info in infos:
+            _safe_member(dest, info.filename)
             out = dest / info.filename
             if info.is_dir():
                 out.mkdir(parents=True, exist_ok=True)
@@ -284,7 +399,9 @@ def install(
     size = info.size_bytes
     fmt = info.format
     # Архив, распакованная копия весов и запас места.
-    need = (size or 0) * (2 if fmt in ("zip", "tar", "tar.gz") else 1) + 1024**3
+    need = (size or 0) * (
+        3 if fmt == "zip-parts" else 2 if fmt in ("zip", "tar", "tar.gz") else 1
+    ) + 1024**3
     free = _free(dest.parent)
     runner.info(
         f"{name}: {info.uri} ({gib(size) if size else 'размер неизвестен'}, {fmt}) -> {dest}; "
@@ -301,7 +418,17 @@ def install(
         runner.require_confirmation(
             f"Загрузить {gib(size) if size else 'неизвестный размер'} для {name}?"
         )
-    archive = fetch_archive(cfg, ref, runner, name)
+    parts: list[Path] = []
+    if fmt == "zip-parts":
+        if ref.sha256:
+            raise SetupWorkError("sha256 каталога zip-parts не поддерживается; уберите sha256")
+        parts = [
+            fetch_archive(cfg, ArtifactRef(uri=uri, format="file"), runner, f"{name}-{index}")
+            for index, uri in enumerate(zip_parts(cfg, ref), 1)
+        ]
+        archive = cfg.artifacts_dir / "downloads" / f"{name}--joined.zip"
+    else:
+        archive = fetch_archive(cfg, ref, runner, name)
     if runner.dry_run:
         runner.info(f"  [dim](dry-run) распаковать {archive} -> {dest}[/]")
         return FetchResult(dest, reused=False, archive=archive)
@@ -319,7 +446,9 @@ def install(
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
     try:
-        if fmt == "zip" or (fmt in ("tar", "tar.gz")):
+        if fmt == "zip-parts":
+            _unpack_parts(parts, staging, archive, runner)
+        elif fmt == "zip" or (fmt in ("tar", "tar.gz")):
             if archive.is_file():
                 total = uncompressed_size(archive, fmt)
                 if total + 512 * 1024**2 > _free(staging):
@@ -343,6 +472,7 @@ def install(
                     "name": name,
                     "uri": ref.uri,
                     "sha256": ref.sha256,
+                    "format": fmt,
                     "size_bytes": size,
                     "installed_at": _dt.datetime.now(_dt.UTC).isoformat(),
                 },
@@ -357,12 +487,25 @@ def install(
             os.replace(dest, old)
             shutil.rmtree(old, ignore_errors=True)
         os.replace(staging, dest)
+    except (zipfile.BadZipFile, NotImplementedError) as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        for part in parts:
+            part.unlink(missing_ok=True)
+        raise SetupWorkError(
+            "ZIP повреждён или использует неподдерживаемый способ сжатия",
+            hint="проверьте ZIP-файлы в HDFS и повторите загрузку модели",
+        ) from exc
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
+        for part in parts:
+            part.unlink(missing_ok=True)
         raise
     keep = ref.keep_archive if ref.keep_archive is not None else keep_archive_default
     if not keep and archive.is_file() and archive.parent == cfg.artifacts_dir / "downloads":
         archive.unlink()
+    if not keep:
+        for part in parts:
+            part.unlink(missing_ok=True)
     runner.event("artifact.install", name=name, uri=ref.uri, dest=str(dest))
     return FetchResult(dest, reused=False, archive=archive if keep else None)
 

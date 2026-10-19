@@ -83,7 +83,7 @@ init: ## Шаблоны настроек (+ env.sh, если задан SETUP_WO
 registries: ## Записать PyPI/npm из bootstrap.env в pip.conf, uv.toml и .npmrc
 	@sh scripts/bootstrap.sh --registries-only
 
-bootstrap: ## registries → uv → окружение проекта → Node.js (из corporate.yaml)
+bootstrap: ## registries → uv → окружение проекта → Node.js/npm (из npm registry)
 	@sh scripts/bootstrap.sh
 	@$(CLI) bootstrap
 
@@ -104,18 +104,18 @@ recommend: $(VENV_STAMP) ## Подобрать модель под железо 
 	@$(CLI) recommend
 
 model-pull: $(VENV_STAMP) ## Скачать и распаковать веса: MODEL=id:variant
-	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
+	$(call require,MODEL,MODEL,qwen3.6-27b:q4_k_m)
 	@$(CLI) model pull
 
 model-list: $(VENV_STAMP) ## Распакованные модели
 	@$(CLI) model list
 
 model-info: $(VENV_STAMP) ## Метаданные модели: MODEL=id[:variant]
-	$(call require,MODEL,MODEL,qwen3-8b)
+	$(call require,MODEL,MODEL,qwen3.8-27b)
 	@$(CLI) model info
 
 model-remove: $(VENV_STAMP) ## Удалить распакованную модель: MODEL=id:variant
-	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
+	$(call require,MODEL,MODEL,qwen3.6-27b:q4_k_m)
 	@$(CLI) model remove
 
 zip-join: ## Склеить части архива (.zip, .z01, …) после подтверждения: ZIP=префикс|файл.zip|папка [OUT=]
@@ -132,7 +132,7 @@ engine-status: $(VENV_STAMP) ## Установленные движки
 
 ##@ 3. Сервер (127.0.0.1 по умолчанию)
 serve: $(VENV_STAMP) ## Запустить: MODEL= [ENGINE= CONTEXT= PORT= TP= ENGINE_ARGS= FOREGROUND=1 PLAN=1]
-	$(call require,MODEL,MODEL,qwen3-8b:q4_k_m)
+	$(call require,MODEL,MODEL,qwen3.6-27b:q4_k_m)
 	@$(CLI) serve
 
 serve-auto: $(VENV_STAMP) ## Запустить лучшую скачанную модель для TASK=
