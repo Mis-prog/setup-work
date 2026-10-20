@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
 import json
 import os
 import re
@@ -182,27 +179,6 @@ def _request(registry: Registry, opener, url: str):
         ) from exc
 
 
-def _integrity(value: str) -> tuple[str, bytes]:
-    for algorithm in ("sha512", "sha256"):
-        for token in value.split():
-            if token.startswith(algorithm + "-"):
-                try:
-                    digest = base64.b64decode(token.split("-", 1)[1], validate=True)
-                except (ValueError, binascii.Error) as exc:
-                    raise SetupWorkError("неверное dist.integrity в ответе npm registry") from exc
-                if len(digest) == hashlib.new(algorithm).digest_size:
-                    return algorithm, digest
-    raise SetupWorkError("пакет npm не содержит проверяемый dist.integrity SHA512 или SHA256")
-
-
-def _digest(path: Path, algorithm: str) -> bytes:
-    result = hashlib.new(algorithm)
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024**2), b""):
-            result.update(block)
-    return result.digest()
-
-
 def _fetch_package(registry: Registry, opener, name: str, version: str, cache: Path) -> Path:
     with _request(registry, opener, f"{registry.url}{name}/{version}") as response:
         raw = response.read(_METADATA_LIMIT + 1)
@@ -213,7 +189,6 @@ def _fetch_package(registry: Registry, opener, name: str, version: str, cache: P
         if meta["name"] != name or meta["version"] != version:
             raise ValueError("версия или имя не совпадают")
         dist = meta["dist"]
-        algorithm, expected = _integrity(dist["integrity"])
         url = dist["tarball"]
         parsed = urlsplit(url)
         # Прокси npm иногда возвращает публичный tarball; запрашивать его через прокси.
@@ -227,18 +202,16 @@ def _fetch_package(registry: Registry, opener, name: str, version: str, cache: P
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise SetupWorkError(
             f"неверные метаданные {name}@{version} в npm registry",
-            hint="проверьте имя, версию, dist.integrity и адрес dist.tarball в зеркале npm",
+            hint="проверьте имя, версию и адрес dist.tarball в зеркале npm",
         ) from exc
     archive = cache / f"{name}-{version}.tgz"
-    if archive.is_file() and _digest(archive, algorithm) == expected:
+    if archive.is_file():
         return archive
     cache.mkdir(parents=True, exist_ok=True)
     part = archive.with_suffix(".part")
     try:
         with _request(registry, opener, url) as response, part.open("wb") as stream:
             shutil.copyfileobj(response, stream, 1024**2)
-        if _digest(part, algorithm) != expected:
-            raise SetupWorkError(f"не совпадает dist.integrity пакета {name}@{version}")
         part.replace(archive)
     finally:
         part.unlink(missing_ok=True)

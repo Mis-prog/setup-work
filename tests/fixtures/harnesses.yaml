@@ -70,7 +70,7 @@ harnesses:
     package: aider-chat
     version: 0.86.2
     install:
-      method: uv
+      method: pip
       python: '3.12'
     binaries:
     - aider

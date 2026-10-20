@@ -60,8 +60,8 @@ class ToolStatus:
 
 # имя → исполняемый файл, аргументы версии, минимальная версия
 TOOL_PROBES: dict[str, tuple[str, list[str], str | None]] = {
-    "python": ("python3", ["python3", "--version"], ">=3.11"),
     "uv": ("uv", ["uv", "--version"], None),
+    "python": ("python3", ["python3", "--version"], ">=3.11"),
     "node": ("node", ["node", "--version"], ">=22"),
     "npm": ("npm", ["npm", "--version"], None),
     "git": ("git", ["git", "--version"], None),
@@ -73,23 +73,6 @@ def detect_tool(name: str, cfg: Config | None = None) -> ToolStatus:
     exe, argv, minimum = TOOL_PROBES[name]
     extra = [cfg.bin_dir] if cfg else []
     path = which(exe, extra)
-    if name == "python" and cfg is not None:
-        # Интерпретатор uv подходит, даже если python3 в PATH старой версии.
-        uv = which("uv", extra)
-        if uv:
-            res = probe([uv, "python", "find", ">=3.11"], timeout=15)
-            if res.ok and res.stdout.strip():
-                p = res.stdout.strip().splitlines()[0]
-                ver = probe([p, "--version"])
-                v = (ver.stdout or ver.stderr).strip()
-                return ToolStatus(
-                    name,
-                    True,
-                    _clean(v),
-                    p,
-                    satisfies=version_satisfies(v, ">=3.11"),
-                    note="управляется или найден через uv" if p != path else None,
-                )
     if not path:
         return ToolStatus(name, False)
     res = probe([path, *argv[1:]], timeout=15)

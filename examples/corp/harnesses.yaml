@@ -1,116 +1,43 @@
-# Внутренние форки харнесов — ШАБЛОН.
-# Замените repository/ref на реальные. Команды сборки взяты из upstream-проектов
-# (2026-10-15) — сверьте с вашими форками. Приватные репозитории клонируются
-# вашей обычной git-аутентификацией (SSH-ключ / credential helper).
-#
-# Репозитории в Bitbucket (Server / Data Center), доступ только по HTTPS. Ссылку
-# берите из кнопки Clone:  https://<bitbucket-host>/scm/<PROJECT>/<repo>.git
-# Логин/токен git берёт из credential helper (`git config --global credential.helper
-# store` или менеджер ОС); в ссылку и в этот файл токен не пишите. Корпоративный CA
-# для git: `git config --global http.sslCAInfo /path/to/corp-ca.crt`.
-# Хост Bitbucket добавьте в trusted_git_hosts в corporate.yaml.
-#
-#   make config-validate
-#   make harness-install NAME=qwen-code DRY_RUN=1
-#   make harness-install NAME=qwen-code
-#   make harness-doctor NAME=qwen-code
+# Внутренние репозитории агентов. Установка и GigaChat API — в setup.sh каждого.
+# Замените repository/ref своими. ref может быть веткой, тегом или коммитом.
+# На повторном make setup новая ревизия применяется после подтверждения.
+# Порядок ниже используется, если HARNESSES или setup.harnesses не заданы.
+# При необходимости: install: {method: setup, script: setup.sh, args: []}
+# setup.sh запускается через bash в корне checkout; переменные окружения наследуются.
 
 harnesses:
-  # Исходный проект: QwenLM/qwen-code — рабочие пространства npm, bin scripts/cli-entry.js, Node >= 22.
-  # Перекрывает встроенный рецепт qwen-code (npm-пакет) внутренним форком.
   qwen-code:
-    description: Qwen Code (внутренний форк)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/qwen-code.git
-    ref: CHANGE-ME          # тег или SHA коммита
-    install:
-      method: none
-      build:
-        - [npm, ci]
-        - [npm, run, build]
-    binaries:
-      - {name: qwen, path: scripts/cli-entry.js, interpreter: node}
-    requires: {node: ">=22"}
-    environment:
-      optional: [OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_MODEL]
-    verify: [qwen, --version]
+    ref: CHANGE-ME
+    install: {method: setup, script: setup.sh}
 
-  # Исходный проект: anomalyco/opencode — монорепозиторий Bun, CLI: packages/cli/src/index.ts.
   opencode:
-    description: OpenCode (внутренний форк)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/opencode.git
     ref: CHANGE-ME
-    install:
-      method: none
-      build:
-        - [bun, install, --frozen-lockfile]
-    binaries:
-      - {name: opencode, path: packages/cli/src/index.ts, interpreter: bun}
-    requires_commands: [bun]
-    environment:
-      optional: [OPENAI_BASE_URL, OPENAI_API_KEY]
-    verify: [opencode, --version]
+    install: {method: setup, script: setup.sh}
 
-  # Исходный проект: badlogic/pi-mono — рабочие пространства npm, bin packages/coding-agent/dist/bundle/cli.js,
-  # Node >= 22.19.
   pi:
-    description: pi coding agent (внутренний форк)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/pi-mono.git
     ref: CHANGE-ME
-    install:
-      method: none
-      build:
-        - [npm, ci]
-        - [npm, run, build]
-    binaries:
-      - {name: pi, path: packages/coding-agent/dist/bundle/cli.js, interpreter: node}
-    requires: {node: ">=22.19"}
-    verify: [pi, --version]
+    install: {method: setup, script: setup.sh}
 
-  # Исходный проект: NousResearch/hermes-agent — Python (>=3.11,<3.15), команда запуска `hermes`.
   hermes:
-    description: Hermes Agent (внутренний форк)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/hermes-agent.git
     ref: CHANGE-ME
-    install:
-      method: uv            # отдельный venv, пакеты из корпоративного PyPI
-      python: "3.12"
-    binaries: [hermes]
-    environment:
-      optional: [OPENAI_BASE_URL, OPENAI_API_KEY]
-    verify: [hermes, --help]
+    install: {method: setup, script: setup.sh}
 
-  # deepseek: внутренний харнес. Заполните под ваш проект — ниже два типичных варианта.
   deepseek:
-    description: DeepSeek coding agent (внутренний)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/deepseek-agent.git
     ref: CHANGE-ME
-    # Вариант A — Python-пакет с команда запуска:
-    install: {method: uv, python: "3.12"}
-    binaries: [deepseek]
-    # Вариант B — Node/TypeScript:
-    # install:
-    #   method: none
-    #   build: [[npm, ci], [npm, run, build]]
-    # binaries:
-    #   - {name: deepseek, path: dist/cli.js, interpreter: node}
-    environment:
-      optional: [DEEPSEEK_BASE_URL, OPENAI_BASE_URL, OPENAI_API_KEY]
-    verify: [deepseek, --help]
+    install: {method: setup, script: setup.sh}
 
-  # skillhub: внутренний репозиторий навыков (skills) для агентов. Пока только
-  # клонируется на зафиксированный ref в <data>/harnesses/skillhub/src; как раскладывать
-  # навыки по агентам — добавим, когда будет понятна структура репозитория.
-  #   make harness-install NAME=skillhub
-  #   make harness-update  NAME=skillhub REF=<новый тег или commit>
   skillhub:
-    description: SkillHub (внутренний репозиторий навыков)
     source: git
     repository: https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/skillhub.git
-    ref: CHANGE-ME          # тег или SHA коммита
-    install:
-      method: none          # ничего не собирается, только checkout
+    ref: CHANGE-ME
+    install: {method: setup, script: setup.sh}

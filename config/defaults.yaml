@@ -36,25 +36,27 @@ downloads:
   confirm_above_gb: 1.0
 
 # Закреплённые версии инструментов. Node.js и npm берутся из npm registry.
-# Контрольные суммы исходных записей сверялись с официальными выпусками 2026-10-15.
 tools:
   uv:
     version: 0.12.13
-    sha256:
-      aarch64-apple-darwin: 7e6ddb9316acc00f2296c82ff4d99977870ee34b2f0ddcae9444d714db9364ed
-      x86_64-apple-darwin: 5e287ef61cb6a9b61b3a83fef124fd143e400468a7dac794230147a810e17119
-      aarch64-unknown-linux-gnu: 2eaa5d94f5db7b3a1a092156b9420459e42ab0217d917fe74a876309cef9b5e9
-      x86_64-unknown-linux-gnu: 745765a3b6e360ad76743599ae5c42e9278c7edf8bbff9fc76d05bf2623a04dd
   node:
     version: 24.20.0
     min_version: "22.0.0"
-    sha256:
-      darwin-arm64: 40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8
-      darwin-x64: 9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4
-      linux-arm64: 5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7
-      linux-x64: 2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
   npm:
     version: 12.2.0
   python:
     version: "3.12"
 
+# Сценарий make setup. null — спросить пользователя при запуске.
+setup:
+  uv: false               # установить uv из корпоративного PyPI; либо make setup UV=1
+  agents: null
+  harnesses: []            # пусто — все Git-рецепты с method: setup, в порядке YAML
+  check_updates: true
+  local_model: null
+  model: null             # пусто — автоматический подбор под доступные GPU
+  engine: null            # либо vllm / llama.cpp
+  task: coding
+  context: 8192
+  concurrency: 1
+  start_local: true

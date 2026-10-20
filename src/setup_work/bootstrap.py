@@ -1,13 +1,14 @@
 """Установка инструментов и движков: сначала план, затем выполнение.
 
-Node.js и npm берутся из корпоративного npm registry; uv — из corporate.yaml: tools.
-Источники движков задаются в engines. Архивы сверяются с контрольными суммами. Python должен быть
+Node.js и npm берутся из корпоративного npm registry.
+Источники движков задаются в engines. Python должен быть
 установлен заранее. Файлы распаковываются в data_dir, ссылки создаются в bin_dir.
 Системные пакеты, sudo и профили shell не используются."""
 
 from __future__ import annotations
 
 import platform
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,7 +19,8 @@ from .hardware import HardwareInfo
 from .runner import Runner, probe, which
 from .steps import Step
 
-BOOTSTRAP_TOOLS = ["uv", "python", "node"]
+BOOTSTRAP_TOOLS = ["python", "node"]
+AVAILABLE_TOOLS = [*BOOTSTRAP_TOOLS, "uv"]
 
 
 @dataclass
@@ -41,22 +43,6 @@ def _is_musl() -> bool:
     return "musl" in (res.stdout + res.stderr).lower()
 
 
-def uv_target() -> str:
-    system, arch = _platform()
-    a = {"arm64": "aarch64", "x86_64": "x86_64"}.get(arch)
-    if a is None:
-        raise UnsupportedError(f"нет закреплённой сборки uv для архитектуры {arch}")
-    if system == "Darwin":
-        return f"{a}-apple-darwin"
-    if system == "Linux":
-        if _is_musl():
-            raise UnsupportedError(
-                "для musl libc, например Alpine, нет закреплённой сборки uv в config/defaults.yaml"
-            )
-        return f"{a}-unknown-linux-gnu"
-    raise UnsupportedError(f"неподдерживаемая ОС {system}")
-
-
 def node_target() -> tuple[str, str]:
     system, arch = _platform()
     a = {"arm64": "arm64", "x86_64": "x64"}.get(arch)
@@ -69,7 +55,6 @@ def node_target() -> tuple[str, str]:
 def _archive_steps(
     cfg: Config,
     tool: str,
-    sha: str | None,
     archive_name: str,
     bins: dict[str, str],
     target: str = "",
@@ -82,17 +67,12 @@ def _archive_steps(
             f"не задан корпоративный источник для {tool}",
             hint=f"заполните tools.{tool}.uri в config/corporate.yaml",
         )
-    sha = corp.sha256 or sha
-    if not sha:
-        raise UnsupportedError(f"нет закреплённого SHA256 для {tool} для платформы {target}")
     root = cfg.tools_dir / tool / version
     archive = cfg.tools_dir / "downloads" / archive_name
     uri = corp.uri.format(version=version, target=target, name=archive_name)
     ref = corp.model_copy(update={"uri": uri, "format": "file"})
     steps = [
-        Step(
-            "fetch", f"загрузить {tool} {version}", artifact=ref, dest=archive, sha256=sha, cfg=cfg
-        ),
+        Step("fetch", f"загрузить {tool} {version}", artifact=ref, dest=archive, cfg=cfg),
         Step("extract", f"распаковать {tool} в {root}", src=archive, dest=root),
     ]
     for link, rel in bins.items():
@@ -105,20 +85,6 @@ def _archive_steps(
             )
         )
     return steps
-
-
-def plan_uv(cfg: Config) -> list[Step]:
-    pin = cfg.defaults.tools["uv"]
-    target = uv_target()
-    inner = f"uv-{target}"
-    return _archive_steps(
-        cfg,
-        "uv",
-        pin.sha256.get(target),
-        f"uv-{pin.version}-{target}.tar.gz",
-        {"uv": f"{inner}/uv", "uvx": f"{inner}/uvx"},
-        target,
-    )
 
 
 def plan_node(cfg: Config) -> list[Step]:
@@ -143,7 +109,6 @@ def plan_node(cfg: Config) -> list[Step]:
     return _archive_steps(
         cfg,
         "node",
-        pin.sha256.get(target),
         f"node-v{pin.version}-{target}.{ext}",
         {b: f"{inner}/{b}" for b in ("node", "npm", "npx", "corepack")},
         target,
@@ -158,19 +123,55 @@ def plan_python(cfg: Config) -> list[Step]:
         Step(
             "manual",
             f"установите Python {v} через системный пакет или администратора; "
-            "setup-work и uv не скачивают интерпретаторы",
+            "setup-work не скачивает интерпретаторы",
         )
+    ]
+
+
+def plan_uv(cfg: Config) -> list[Step]:
+    """Необязательный uv устанавливается через корпоративный pip в отдельный venv."""
+    from .corporate import pip_index
+
+    if not pip_index():
+        raise NotFoundError("для uv настройте корпоративный PyPI через make registries")
+    version = cfg.defaults.tools["uv"].version
+    root = cfg.tools_dir / "uv" / version
+    python = root / "bin" / "python"
+    return [
+        Step(
+            "command",
+            "создать окружение инструмента uv",
+            argv=[sys.executable, "-m", "venv", str(root)],
+            when=lambda: not python.exists(),
+        ),
+        Step(
+            "command",
+            f"установить uv {version} из корпоративного PyPI",
+            argv=[
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--only-binary=:all:",
+                f"uv=={version}",
+            ],
+        ),
+        *[
+            Step("link", f"создать ссылку {name}", src=root / "bin" / name, dest=cfg.bin_dir / name)
+            for name in ("uv", "uvx")
+        ],
     ]
 
 
 def plan_tools(cfg: Config, tools: list[str], *, force: bool = False) -> list[ToolPlan]:
     for t in tools:
-        if t not in BOOTSTRAP_TOOLS:
+        if t not in AVAILABLE_TOOLS:
             raise UsageError(
                 f"неизвестный инструмент {t!r}",
-                hint=f"доступные инструменты: {', '.join(BOOTSTRAP_TOOLS)}",
+                hint=f"доступные инструменты: {', '.join(AVAILABLE_TOOLS)}",
             )
-    env = detect_environment(cfg, ["python", "uv", "node", "npm"])
+    env = detect_environment(cfg, ["python", "node", "npm", "uv"])
     plans: list[ToolPlan] = []
     for t in tools:
         try:
@@ -185,9 +186,9 @@ def plan_tools(cfg: Config, tools: list[str], *, force: bool = False) -> list[To
 def _plan_one(cfg: Config, env: Environment, t: str, force: bool) -> ToolPlan:
     st = env.tool(t) or detect_tool(t, cfg)
     if t == "uv":
-        if st.installed and not force:
+        if st.installed and st.version == cfg.defaults.tools["uv"].version and not force:
             return ToolPlan(t, "satisfied", detail=f"{st.version} по пути {st.path}")
-        return ToolPlan(t, "install", plan_uv(cfg), "корпоративный архив с проверкой SHA256")
+        return ToolPlan(t, "install", plan_uv(cfg))
     if t == "python":
         if st.installed and st.satisfies and not force:
             return ToolPlan(t, "satisfied", detail=f"{st.version} по пути {st.path}")
@@ -209,7 +210,10 @@ def _plan_one(cfg: Config, env: Environment, t: str, force: bool) -> ToolPlan:
         else:
             why = "Node.js не установлен"
         return ToolPlan(
-            t, "install", plan_node(cfg), f"{why}; установка Node.js и npm с проверкой целостности"
+            t,
+            "install",
+            plan_node(cfg),
+            f"{why}; установка Node.js и npm из корпоративного реестра",
         )
     raise UsageError(f"неизвестный инструмент {t}")
 
@@ -259,7 +263,7 @@ def _activate_llama(cfg: Config, dest: Path, art: EngineArtifact) -> None:
     for f in binary.parent.iterdir():
         if f.is_file() and f.name.startswith("llama-"):
             ensure_executable(f)
-    make_link(binary.parent, cfg.engines_dir / "llama.cpp" / "current", cfg.data_dir)
+    make_link(binary.parent, cfg.engines_dir / "llama.cpp" / "current", cfg.runtime_dir)
 
 
 def _read_pyvenv(cfgfile: Path) -> dict[str, str]:
@@ -279,14 +283,10 @@ def _find_interpreter(version: str, home: str | None, cfg: Config) -> Path | Non
     cands: list[Path] = []
     if home:
         cands += [Path(home) / f"python{version}", Path(home) / "python3"]
-    uv = which("uv", [cfg.bin_dir])
-    if uv:
-        res = probe([uv, "python", "find", "--no-project", version], timeout=30)
-        if res.ok and res.stdout.strip():
-            cands.append(Path(res.stdout.strip().splitlines()[0]))
-    w = which(f"python{version}")
-    if w:
-        cands.append(Path(w))
+    for name in (f"python{version}", "python3"):
+        w = which(name, [cfg.bin_dir])
+        if w:
+            cands.append(Path(w))
     for c in cands:
         if c.is_file():
             res = probe([str(c), "-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
@@ -365,7 +365,7 @@ def _activate_vllm(cfg: Config, dest: Path, art: EngineArtifact, runner: Runner)
         venv = marker.parent if marker else dest
     for note in repair_venv(venv, cfg, runner):
         runner.info(f"  {note}")
-    make_link(venv, cfg.engines_dir / "vllm" / "current", cfg.data_dir)
+    make_link(venv, cfg.engines_dir / "vllm" / "current", cfg.runtime_dir)
 
 
 def plan_engine_artifact(cfg: Config, engine: str, art: EngineArtifact) -> list[Step]:

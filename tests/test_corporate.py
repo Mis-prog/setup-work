@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import stat
 import subprocess
@@ -62,10 +61,6 @@ def fake_hdfs(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def _clear_team(monkeypatch):
     for k in (
-        "UV_DEFAULT_INDEX",
-        "UV_INDEX_URL",
-        "UV_INDEX",
-        "UV_INSECURE_HOST",
         "PIP_INDEX_URL",
         "PIP_CONFIG_FILE",
     ):
@@ -82,11 +77,10 @@ def team(tmp_path, corporate_yaml: str = "", **extra: str) -> Config:
     return Config()
 
 
-def make_zip(path: Path, files: dict[str, bytes]) -> str:
+def make_zip(path: Path, files: dict[str, bytes]) -> None:
     with zipfile.ZipFile(path, "w") as zf:
         for name, data in files.items():
             zf.writestr(name, data)
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 RUN = Runner(assume_yes=True, interactive=False)
@@ -130,10 +124,8 @@ def test_example_corp_config_is_valid(monkeypatch):
 
 def test_model_pull_from_hdfs_gguf(tmp_path, fake_hdfs, hw_4090):
     (fake_hdfs / "ml").mkdir()
-    sha = make_zip(fake_hdfs / "ml" / "q.zip", {"Qwen3-8B/Qwen3-8B-Q4_K_M.gguf": b"GGUF" * 100})
-    cfg = team(
-        tmp_path, f"models:\n  'qwen3-8b:q4_k_m': {{uri: 'hdfs:///ml/q.zip', sha256: {sha}}}\n"
-    )
+    make_zip(fake_hdfs / "ml" / "q.zip", {"Qwen3-8B/Qwen3-8B-Q4_K_M.gguf": b"GGUF" * 100})
+    cfg = team(tmp_path, "models:\n  'qwen3-8b:q4_k_m': {uri: 'hdfs:///ml/q.zip'}\n")
     spec, var = resolve(cfg, "qwen3-8b:q4_k_m")
     entry = hub.pull_artifact(cfg, "qwen3-8b", var, hub.model_artifact(cfg, "qwen3-8b", var), RUN)
     assert entry.name == "Qwen3-8B-Q4_K_M.gguf" and entry.is_file()
@@ -170,18 +162,6 @@ def test_model_pull_safetensors_dir_and_validation(tmp_path, fake_hdfs):
     _, fp8 = resolve(cfg, "qwen3-8b:fp8")
     with pytest.raises(SetupWorkError, match="config.json"):
         hub.pull_artifact(cfg, "qwen3-8b", fp8, hub.model_artifact(cfg, "qwen3-8b", fp8), RUN)
-
-
-def test_checksum_mismatch_deletes_copy(tmp_path, fake_hdfs):
-    make_zip(fake_hdfs / "x.zip", {"a.gguf": b"1"})
-    cfg = team(
-        tmp_path, "models:\n  'qwen3-8b:q8_0': {uri: 'hdfs:///x.zip', sha256: '" + "0" * 64 + "'}\n"
-    )
-    _, v = resolve(cfg, "qwen3-8b:q8_0")
-    with pytest.raises(SetupWorkError, match="не совпадает SHA256"):
-        hub.pull_artifact(cfg, "qwen3-8b", v, hub.model_artifact(cfg, "qwen3-8b", v), RUN)
-    assert not list((cfg.artifacts_dir / "downloads").iterdir())
-    assert not hub.artifact_model_dir(cfg, "qwen3-8b", v).exists()
 
 
 def test_missing_hdfs_path_and_kerberos(tmp_path, fake_hdfs, monkeypatch):
@@ -315,29 +295,21 @@ def test_tool_archive_from_corporate_source(tmp_path, monkeypatch):
     step = bs.plan_node(cfg)[0]
     assert step.kind == "fetch"
     assert step.artifact.uri == "hdfs:///tools/node-v24.20.0-linux-x64.tar.xz"
-    assert (
-        step.sha256 == cfg.defaults.tools["node"].sha256["linux-x64"]
-    )  # контрольная сумма по-прежнему проверяется
 
 
-# ------------------------------------------------------------ pip / uv / env
+# ------------------------------------------------------------ pip / env
 
 
-def test_pip_and_uv_index_are_read_from_their_own_files(tmp_path, monkeypatch):
+def test_pip_index_is_read_from_config(tmp_path, monkeypatch):
     xdg = tmp_path / "xdgconf"
     (xdg / "pip").mkdir(parents=True)
-    (xdg / "uv").mkdir()
     (xdg / "pip" / "pip.conf").write_text("[global]\nindex-url = https://u:pw@nexus.corp/simple\n")
-    (xdg / "uv" / "uv.toml").write_text(
-        '[[index]]\nname = "corp"\nurl = "https://u:pw@nexus.corp/simple"\ndefault = true\n'
-    )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     assert corporate.pip_index() == "https://u:pw@nexus.corp/simple"
-    assert corporate.uv_index() == "https://u:pw@nexus.corp/simple"
-    assert corporate.mask(corporate.uv_index()) == "https://***@nexus.corp/simple"
-    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://mine/simple")
-    assert corporate.uv_index() == "https://mine/simple"  # окружение пользователя имеет приоритет
+    assert corporate.mask(corporate.pip_index()) == "https://***@nexus.corp/simple"
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mine/simple")
+    assert corporate.pip_index() == "https://mine/simple"  # окружение пользователя имеет приоритет
 
 
 def test_corporate_env_applied_without_overriding(tmp_path, monkeypatch):
@@ -346,11 +318,9 @@ def test_corporate_env_applied_without_overriding(tmp_path, monkeypatch):
         tmp_path, "env:\n  NPM_CONFIG_REGISTRY: https://corp/\n  SW_TEST_MIRROR: https://m/\n"
     )
     monkeypatch.delenv("SW_TEST_MIRROR", raising=False)
-    monkeypatch.delenv("UV_PYTHON_DOWNLOADS", raising=False)
     corporate.apply_environment(cfg)
     assert os.environ["NPM_CONFIG_REGISTRY"] == "https://mine/"
     assert os.environ["SW_TEST_MIRROR"] == "https://m/"
-    assert os.environ["UV_PYTHON_DOWNLOADS"] == "never"
     monkeypatch.delenv("SW_TEST_MIRROR")
 
 
@@ -435,8 +405,7 @@ def test_bootstrap_sh_reads_bootstrap_env(tmp_path):
     teamdir = tmp_path / "t"
     teamdir.mkdir()
     (teamdir / "bootstrap.env").write_text(
-        "UV_DEFAULT_INDEX=https://nexus.corp/simple\nSETUP_WORK_UV_FROM_PIP=1\n"
-        "evil key=1\nCORP_TOKEN=abc\n"
+        "PIP_INDEX_URL=https://nexus.corp/simple\nevil key=1\nCORP_TOKEN=abc\n"
     )
     env = {
         "HOME": str(tmp_path / "h"),
@@ -454,8 +423,8 @@ def test_bootstrap_sh_reads_bootstrap_env(tmp_path):
         "секретный ключ нельзя хранить в bootstrap.env; используйте файл токена: CORP_TOKEN"
         in out.stdout
     )
-    assert "pip install" in out.stdout and "--target" in out.stdout and "uv==0.12.13" in out.stdout
-    assert "обновит привязку" in out.stdout
+    assert "-m pip install" in out.stdout and "[dev]" in out.stdout
+    assert "venv + pip" in out.stdout
 
 
 def _registries_env(tmp_path, **extra):
@@ -501,11 +470,11 @@ def test_bootstrap_sh_writes_registries(tmp_path):
     assert "index-url = https://token:tok%2F%2B%3Dx@repo.corp.example/pypi/simple" in pip_conf
     assert "trusted-host = repo.corp.example" in pip_conf
 
-    uv_toml = (home / ".config" / "uv" / "uv.toml").read_text()
-    assert uv_toml.startswith("# managed by setup-work")
-    assert 'url = "https://token:tok%2F%2B%3Dx@repo.corp.example/pypi/simple"' in uv_toml
-    assert "default = true" in uv_toml and 'python-downloads = "never"' in uv_toml
-    assert 'allow-insecure-host = ["repo.corp.example"]' in uv_toml
+    uv_conf = home / ".config/uv/uv.toml"
+    assert (
+        'url = "https://token:tok%2F%2B%3Dx@repo.corp.example/pypi/simple"' in uv_conf.read_text()
+    )
+    assert uv_conf.stat().st_mode & 0o777 == 0o600
 
     npmrc = (home / ".npmrc").read_text().splitlines()
     assert npmrc == [
@@ -516,7 +485,6 @@ def test_bootstrap_sh_writes_registries(tmp_path):
     ]
     for f in (
         home / ".config" / "pip" / "pip.conf",
-        home / ".config" / "uv" / "uv.toml",
         home / ".npmrc",
     ):
         assert f.stat().st_mode & 0o777 == 0o600
@@ -563,21 +531,12 @@ def test_bootstrap_sh_registries_dry_run_and_missing_token(tmp_path):
     assert "не читается файл npm auth" in out.stderr
 
 
-def test_bootstrap_sh_keeps_a_foreign_uv_toml(tmp_path):
-    home, env = _registries_env(tmp_path)
-    (home / ".config" / "uv").mkdir(parents=True)
-    (home / ".config" / "uv" / "uv.toml").write_text("native-tls = true\n")
-    out = _run_registries(env)
-    assert out.returncode != 0 and "создан не setup-work" in out.stderr
-    assert (home / ".config" / "uv" / "uv.toml").read_text() == "native-tls = true\n"
-
-
 def test_setup_work_home_puts_everything_in_one_folder(tmp_path, monkeypatch):
     home = tmp_path / "nfs" / "setup-work"
     monkeypatch.delenv("SETUP_WORK_USER_CONFIG_DIR")
     monkeypatch.delenv("SETUP_WORK_BIN_DIR")
     monkeypatch.setenv("SETUP_WORK_HOME", str(home))
-    for k in ("PIP_CONFIG_FILE", "UV_CONFIG_FILE", "NPM_CONFIG_USERCONFIG"):
+    for k in ("PIP_CONFIG_FILE", "NPM_CONFIG_USERCONFIG"):
         monkeypatch.delenv(k, raising=False)
     cfg = Config()
     assert cfg.user_dir == home / "config"
@@ -586,12 +545,19 @@ def test_setup_work_home_puts_everything_in_one_folder(tmp_path, monkeypatch):
         home / "state",
         home / "bin",
     )
-    assert cfg.models_dir == home / "data" / "models"
+    assert cfg.models_dir == cfg.runtime_dir / "models"
+    assert cfg.harness_dir == home / "data" / "harnesses"
     corporate.apply_environment(cfg)
-    assert os.environ["UV_CONFIG_FILE"] == str(home / "registries" / "uv.toml")
+    assert os.environ["PIP_CACHE_DIR"] == str(home / "cache" / "pip")
     assert os.environ["PIP_CONFIG_FILE"] == str(home / "registries" / "pip.conf")
     assert os.environ["NPM_CONFIG_USERCONFIG"] == str(home / "registries" / "npmrc")
-    for k in ("PIP_CONFIG_FILE", "UV_CONFIG_FILE", "NPM_CONFIG_USERCONFIG", "UV_CACHE_DIR"):
+    for k in (
+        "PIP_CONFIG_FILE",
+        "NPM_CONFIG_USERCONFIG",
+        "PIP_CACHE_DIR",
+        "UV_CONFIG_FILE",
+        "UV_CACHE_DIR",
+    ):
         monkeypatch.delenv(k)
     monkeypatch.delenv("npm_config_cache")
     monkeypatch.delenv("GIT_CONFIG_GLOBAL")
@@ -612,6 +578,6 @@ def test_bootstrap_sh_init_with_setup_work_home(tmp_path):
     for f in ("bootstrap.env", "corporate.yaml", "harnesses.yaml"):
         assert (nfs / "config" / f).is_file()
     env_sh = (nfs / "env.sh").read_text()
-    assert f'export SETUP_WORK_HOME="{nfs}"' in env_sh
-    assert 'UV_CONFIG_FILE="$SETUP_WORK_HOME/registries/uv.toml"' in env_sh
+    assert f"export SETUP_WORK_HOME={nfs}" in env_sh
+    assert f"PIP_CONFIG_FILE={nfs}/registries/pip.conf" in env_sh
     assert not (tmp_path / "h").exists()  # HOME контейнера не изменяется

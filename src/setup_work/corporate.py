@@ -8,7 +8,6 @@ from __future__ import annotations
 import configparser
 import os
 import re
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -43,21 +42,6 @@ def pip_index() -> str | None:
     return found
 
 
-def uv_index() -> str | None:
-    """Определить основной индекс uv из uv.toml или UV_DEFAULT_INDEX."""
-    if os.environ.get("UV_DEFAULT_INDEX"):
-        return os.environ["UV_DEFAULT_INDEX"]
-    f = Path(os.environ.get("UV_CONFIG_FILE") or _config_home() / "uv" / "uv.toml")
-    try:
-        data = tomllib.loads(f.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
-    for idx in data.get("index", []):
-        if idx.get("default"):
-            return idx.get("url")
-    return data.get("index-url")
-
-
 def registry_env() -> dict[str, str]:
     """При SETUP_WORK_HOME настройки и кэши pip/uv/npm сохраняются в общем каталоге."""
     home = setup_work_home()
@@ -66,8 +50,9 @@ def registry_env() -> dict[str, str]:
     return {
         "PIP_CONFIG_FILE": str(home / "registries" / "pip.conf"),
         "UV_CONFIG_FILE": str(home / "registries" / "uv.toml"),
-        "NPM_CONFIG_USERCONFIG": str(home / "registries" / "npmrc"),
         "UV_CACHE_DIR": str(home / "cache" / "uv"),
+        "NPM_CONFIG_USERCONFIG": str(home / "registries" / "npmrc"),
+        "PIP_CACHE_DIR": str(home / "cache" / "pip"),
         "npm_config_cache": str(home / "cache" / "npm"),
         "GIT_CONFIG_GLOBAL": str(home / "gitconfig"),
     }
@@ -75,7 +60,7 @@ def registry_env() -> dict[str, str]:
 
 def apply_environment(cfg: Config) -> None:
     """Применить env из corporate.yaml, сохраняя приоритет заданного окружения."""
-    os.environ.setdefault("UV_PYTHON_DOWNLOADS", "never")  # зеркало Python не предусмотрено
+    os.environ.setdefault("UV_PYTHON_DOWNLOADS", "never")
     for k, v in registry_env().items():
         os.environ.setdefault(k, v)
     try:
@@ -101,9 +86,8 @@ def status(cfg: Config) -> dict[str, Any]:
     if corp.models or corp.engines or corp.tools or hdfs:
         ok, why = kerberos_ok(corp.hdfs)
         info["kerberos"] = {"ok": ok, "detail": why}
-    pip, uv = pip_index(), uv_index()
+    pip = pip_index()
     info["pip_index"] = mask(pip) if pip else None
-    info["uv_index"] = mask(uv) if uv else None
     npm = which("npm")
     if npm:
         res = probe([npm, "config", "get", "registry"], timeout=15)

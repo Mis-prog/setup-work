@@ -1,6 +1,6 @@
 """Корпоративные артефакты: HDFS, локальные/NFS-каталоги и HTTPS.
 
-Архивы загружаются в <data>/artifacts/downloads и распаковываются через временный
+Архивы загружаются в <runtime>/artifacts/downloads и распаковываются через временный
 каталог. Маркер .setup-work-artifact.json позволяет переиспользовать установку.
 HDFS читается штатным клиентом кластера с его настройками Kerberos и HA.
 ZIP сохраняет права Unix и символьные ссылки; пути проверяются до распаковки."""
@@ -24,7 +24,7 @@ from .config import ArtifactRef, Config, HdfsConfig
 from .errors import MissingDependencyError, NotFoundError, SetupWorkError
 from .memory import gib
 from .runner import Runner, probe, which
-from .steps import _safe_member, download_verified, sha256_file
+from .steps import _safe_member, download
 
 MARKER = ".setup-work-artifact.json"
 
@@ -148,7 +148,7 @@ def is_current(dest: Path, ref: ArtifactRef) -> bool:
     return bool(
         m
         and m.get("uri") == ref.uri
-        and m.get("sha256") == ref.sha256
+        and m.get("version") == ref.version
         and m.get("format", "" if ref.effective_format == "zip-parts" else ref.effective_format)
         == ref.effective_format
     )
@@ -326,9 +326,12 @@ class FetchResult:
 def fetch_archive(cfg: Config, ref: ArtifactRef, runner: Runner, name: str) -> Path:
     """Поместить архив, файл или каталог в локальный кэш загрузок."""
     downloads = cfg.artifacts_dir / "downloads"
-    downloads.mkdir(parents=True, exist_ok=True)
     base = ref.uri.rstrip("/").rsplit("/", 1)[-1] or name
     target = downloads / f"{name}--{base}"
+    if runner.dry_run:
+        runner.info(f"  (dry-run) загрузить {ref.uri} -> {target}")
+        return target
+    downloads.mkdir(parents=True, exist_ok=True)
     sch = scheme(ref.uri)
     if sch == "local":
         src = local_path(ref.uri)
@@ -336,26 +339,16 @@ def fetch_archive(cfg: Config, ref: ArtifactRef, runner: Runner, name: str) -> P
             return src  # использовать исходный каталог; копирование при установке
         if not src.exists():
             raise NotFoundError(f"артефакт {src} не найден; проверьте uri в corporate.yaml")
-        if target.exists() and target.stat().st_size == src.stat().st_size:
-            return target
         runner.run(["cp", "--", str(src), str(target) + ".part"])
     elif sch == "https":
-        if not ref.sha256:
-            raise SetupWorkError(
-                f"HTTPS-артефакт {ref.uri} требует SHA256; заполните sha256 в config/corporate.yaml"
-            )
         if runner.dry_run:
             runner.info(f"  [dim](dry-run) загрузить {ref.uri} -> {target}[/]")
             return target
-        return download_verified(ref.uri, target, ref.sha256, timeout=3600)
+        return download(ref.uri, target, timeout=3600)
     else:
         h = cfg.corporate.hdfs
         require_kerberos(h)
         cli = hdfs_cli(h)
-        size = hdfs_size(h, ref.uri)
-        if target.exists() and size is not None and _size_of(target) == size:
-            runner.info(f"  используется установленная копия {target}")
-            return target
         part = Path(str(target) + ".part")
         if part.exists():
             if part.is_dir():
@@ -375,12 +368,6 @@ def fetch_archive(cfg: Config, ref: ArtifactRef, runner: Runner, name: str) -> P
     return target
 
 
-def _size_of(p: Path) -> int:
-    if p.is_file():
-        return p.stat().st_size
-    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-
-
 def install(
     cfg: Config,
     ref: ArtifactRef,
@@ -391,10 +378,13 @@ def install(
     keep_archive_default: bool = False,
     confirm_large: bool = True,
 ) -> FetchResult:
-    """Загрузить, проверить и распаковать ref в dest; повторная установка переиспользуется."""
+    """Загрузить и распаковать ref в dest; повторная установка переиспользуется."""
     if is_current(dest, ref):
         runner.info(f"[green]уже установлен[/] {name} at {dest}")
         return FetchResult(dest, reused=True)
+    if runner.dry_run:
+        runner.info(f"  (dry-run) загрузить {ref.uri} ({ref.effective_format}) -> {dest}")
+        return FetchResult(dest, reused=False)
     info = inspect(cfg, ref)
     size = info.size_bytes
     fmt = info.format
@@ -420,8 +410,6 @@ def install(
         )
     parts: list[Path] = []
     if fmt == "zip-parts":
-        if ref.sha256:
-            raise SetupWorkError("sha256 каталога zip-parts не поддерживается; уберите sha256")
         parts = [
             fetch_archive(cfg, ArtifactRef(uri=uri, format="file"), runner, f"{name}-{index}")
             for index, uri in enumerate(zip_parts(cfg, ref), 1)
@@ -432,15 +420,6 @@ def install(
     if runner.dry_run:
         runner.info(f"  [dim](dry-run) распаковать {archive} -> {dest}[/]")
         return FetchResult(dest, reused=False, archive=archive)
-    if ref.sha256 and archive.is_file():
-        runner.info(f"  проверка SHA256 архива {archive.name} ...")
-        got = sha256_file(archive)
-        if got != ref.sha256:
-            archive.unlink()
-            raise SetupWorkError(
-                f"не совпадает SHA256 для {ref.uri}\n  ожидается {ref.sha256}\n  получено {got}",
-                hint="локальная копия удалена; проверьте архив и sha256 в config/corporate.yaml",
-            )
     staging = dest.parent / f".{dest.name}.unpacking"
     if staging.exists():
         shutil.rmtree(staging)
@@ -471,7 +450,7 @@ def install(
                 {
                     "name": name,
                     "uri": ref.uri,
-                    "sha256": ref.sha256,
+                    "version": ref.version,
                     "format": fmt,
                     "size_bytes": size,
                     "installed_at": _dt.datetime.now(_dt.UTC).isoformat(),

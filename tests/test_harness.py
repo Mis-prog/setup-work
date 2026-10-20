@@ -37,8 +37,15 @@ def test_npm_install_plan_is_pinned_and_local(cfg, no_req):
 
 def test_pypi_install_uses_dedicated_venv(cfg, no_req):
     plan = hz.plan_install(cfg, "aider", version="0.86.1")
-    venv_step, install_step = plan.steps[0], plan.steps[1]
-    assert venv_step.argv[1:4] == ["venv", "--python", "3.12"]
+    venv_step, install_step = plan.steps[0], plan.steps[2]
+    assert venv_step.argv[1:3] == ["-m", "venv"]
+    assert venv_step.argv[-1] == str(cfg.harness_dir / "aider" / ".venv")
+    assert install_step.argv[:4] == [
+        str(cfg.harness_dir / "aider" / ".venv" / "bin" / "python"),
+        "-m",
+        "pip",
+        "install",
+    ]
     assert install_step.argv[-1] == "aider-chat==0.86.1"
 
 
@@ -58,7 +65,7 @@ harnesses:
     source: git
     repository: https://bitbucket.corp.example/scm/example/agent.git
     ref: v1.2.0
-    install: {method: uv}
+    install: {method: pip}
     binaries: [agent]
     environment:
       required: [OPENAI_BASE_URL, OPENAI_API_KEY]

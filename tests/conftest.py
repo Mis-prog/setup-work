@@ -24,6 +24,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("SETUP_WORK_BIN_DIR", str(tmp_path / "bin"))
+    monkeypatch.setenv("SETUP_WORK_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("SETUP_WORK_USER_CONFIG_DIR", str(tmp_path / "userconf"))
     builtin = tmp_path / "builtin"
     builtin.mkdir()

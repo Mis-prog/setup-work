@@ -138,3 +138,22 @@ def test_destructive_without_yes_aborts(capsys, tmp_path):
     assert (cfg.tools_dir / "downloads").exists()
     code, _, _ = run(capsys, "--yes", "clean")
     assert code == 0 and not (cfg.tools_dir / "downloads").exists()
+
+
+def test_setup_make_flags_and_json(capsys, monkeypatch):
+    from setup_work import pipeline
+
+    monkeypatch.setenv("SETUP_WORK_WITH_AGENTS", "0")
+    monkeypatch.setenv("SETUP_WORK_LOCAL_MODEL", "0")
+    monkeypatch.setenv("SETUP_WORK_WITH_UV", "1")
+    monkeypatch.setenv("SETUP_WORK_HARDWARE_FILE", str(HW_DIR / "cpu-only-32gb.json"))
+    seen = {}
+
+    def fake_run(cfg, hardware, runner, **kwargs):
+        seen.update(kwargs)
+        return {"backend": "gigachat", "stages": {}}
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    code, out, _ = run(capsys, "--json", "setup")
+    assert code == 0 and json.loads(out)["backend"] == "gigachat"
+    assert seen["agents"] is False and seen["local"] is False and seen["uv"] is True

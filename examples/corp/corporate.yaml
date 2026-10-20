@@ -34,8 +34,12 @@ engines:
   vllm:
     uri: hdfs:///ml/engines/vllm-0.30.0-py312-cu128-venv.zip
 
-# Архив uv: sha256 из defaults.yaml проверяется. Node.js/npm — через npm registry.
-# Плейсхолдеры: {version} {target} {name}
-tools:
-  uv:
-    uri: hdfs:///ml/tools/uv/{name}
+# Node.js и npm скачиваются из SETUP_WORK_NPM_REGISTRY в bootstrap.env.
+# Для установки из готового архива можно явно добавить tools.node.uri.
+
+# Источники JAR пока не определены. null — пропустить.
+# Позже можно указать прямой HTTPS URL (включая Bitbucket), HDFS или локальный путь:
+# trino: {uri: "hdfs:///ml/jars/trino-jdbc-VERSION.jar", format: file, version: "VERSION"}
+jars:
+  trino: null
+  iceberg: null

@@ -17,7 +17,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from . import __version__, corporate, hub
+from . import __version__, corporate, hub, pipeline
 from . import bootstrap as bs
 from . import harness as hz
 from .config import Config
@@ -167,6 +167,74 @@ def version(json_out: bool = _json_opt()) -> None:
         console.print(f"setup-work {__version__}")
 
 
+@app.command("setup")
+def setup_cmd(
+    uv: bool | None = typer.Option(
+        None,
+        "--uv/--no-uv",
+        envvar="SETUP_WORK_WITH_UV",
+        help="Дополнительно установить uv из корпоративного PyPI.",
+    ),
+    agents: bool | None = typer.Option(
+        None,
+        "--agents/--no-agents",
+        envvar="SETUP_WORK_WITH_AGENTS",
+        help="Установить агентов; без настройки — спросить.",
+    ),
+    harnesses: str | None = typer.Option(
+        None,
+        "--harnesses",
+        envvar="SETUP_WORK_HARNESSES",
+        help="Имена через запятую.",
+    ),
+    local: bool | None = typer.Option(
+        None,
+        "--local/--no-local",
+        envvar="SETUP_WORK_LOCAL_MODEL",
+        help="Дополнительно поднять локальную модель при наличии GPU.",
+    ),
+    updates: bool | None = typer.Option(
+        None,
+        "--updates/--no-updates",
+        envvar="SETUP_WORK_CHECK_UPDATES",
+        help="Проверять новые ревизии агентов; перед применением спросить.",
+    ),
+    model: str | None = typer.Option(None, envvar="SETUP_WORK_MODEL"),
+    engine: str | None = typer.Option(None, envvar="SETUP_WORK_ENGINE"),
+    context: int | None = typer.Option(None, envvar="SETUP_WORK_CONTEXT", min=256),
+    json_out: bool = _json_opt(),
+) -> None:
+    """Инфраструктура → агенты с GigaChat → дополнительная локальная модель.
+
+    Запускайте make setup, чтобы сначала настроить pip/npm и окружение проекта.
+    """
+    _set_json(json_out)
+    cfg = STATE.cfg
+    if engine is not None and engine not in ("llama.cpp", "vllm"):
+        raise UsageError("укажите движок llama.cpp или vllm")
+    overrides = {
+        key: value
+        for key, value in {"model": model, "engine": engine, "context": context}.items()
+        if value is not None
+    }
+    cfg.defaults.setup = type(cfg.defaults.setup).model_validate(
+        {**cfg.defaults.setup.model_dump(), **overrides}
+    )
+    names = [name.strip() for name in harnesses.split(",")] if harnesses is not None else None
+    result = pipeline.run(
+        cfg,
+        lambda: STATE.hw,
+        STATE.runner,
+        agents=agents,
+        names=names,
+        local=local,
+        check_updates=updates,
+        uv=uv,
+    )
+    if STATE.json:
+        emit_json(result)
+
+
 def _hw_table(hw: HardwareInfo) -> Table:
     t = Table.grid(padding=(0, 2))
     t.add_column(style="bold")
@@ -283,11 +351,6 @@ def _corp_table(c: dict[str, Any]) -> Table:
         c.get("pip_index")
         or f"{WARN} не настроен; заполните config/bootstrap.env и выполните make registries",
     )
-    t.add_row(
-        "Индекс uv",
-        c.get("uv_index")
-        or f"{WARN} не настроен; заполните config/bootstrap.env и выполните make registries",
-    )
     if "npm_registry" in c:
         reg = c.get("npm_registry") or ""
         public = not reg or "registry.npmjs.org" in reg
@@ -314,7 +377,7 @@ def doctor(
     cfg, hw = STATE.cfg, STATE.hw
     env = detect_environment(cfg)
     problems = cfg.validate_all()
-    core = ["python", "uv", "git"]
+    core = ["python", "git"]
     missing_core = [t.name for t in env.tools if t.name in core and not t.installed]
     if _set_json(json_out):
         emit_json(
@@ -459,13 +522,15 @@ def _print_tool_plans(plans: list[bs.ToolPlan]) -> None:
 
 @app.command("bootstrap")
 def bootstrap_cmd(
-    tool: list[str] = typer.Option(None, "--tool", help="uv, python и/или node; по умолчанию все."),
+    tool: list[str] = typer.Option(
+        None, "--tool", help="python, node или uv; по умолчанию python и node."
+    ),
     force: bool = typer.Option(
         False, "--force", help="Переустановить, даже если инструмент уже подходит."
     ),
     json_out: bool = _json_opt(),
 ) -> None:
-    """Установить uv из архива, Node.js/npm из npm registry и проверить Python."""
+    """Установить Node.js/npm из npm registry и проверить Python."""
     cfg = STATE.cfg
     _set_json(json_out)
     plans = bs.plan_tools(cfg, list(tool) if tool else bs.BOOTSTRAP_TOOLS, force=force)
@@ -498,7 +563,7 @@ def _run_tool_plans(cfg: Config, plans: list[bs.ToolPlan]) -> None:
         execute(steps, STATE.runner, cfg.data_dir)
     else:
         STATE.runner.info(f"{OK} установка не требуется")
-    env = detect_environment(cfg, ["uv"])
+    env = detect_environment(cfg, ["python", "node"])
     if not env.bin_dir_on_path and any(s.kind == "link" for p in todo for s in p.steps):
         STATE.runner.info(
             f"\n{WARN} {cfg.bin_dir} is not on PATH. setup-work does not edit shell startup "

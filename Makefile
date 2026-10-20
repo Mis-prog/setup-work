@@ -12,8 +12,10 @@ SHELL := /bin/sh
 # SETUP_WORK_HOME — постоянный каталог реестров, инструментов, моделей и кэшей.
 # Создайте env.sh через make init и подключайте его в каждом новом shell.
 export SETUP_WORK_HOME
-UV ?= $(shell command -v uv 2>/dev/null || echo "$(if $(SETUP_WORK_HOME),$(SETUP_WORK_HOME)/bin,$(HOME)/.local/bin)/uv")
-CLI := $(UV) run --no-sync --quiet setup-work
+PYTHON ?= python3
+export PYTHON
+VENV_PYTHON := .venv/bin/python
+CLI := $(VENV_PYTHON) -m setup_work
 VENV_STAMP := .venv/.setup-work-synced
 
 # ---- параметры -> окружение (без подстановки в shell) ------------------------
@@ -46,6 +48,11 @@ export SETUP_WORK_DRY_RUN        = $(DRY_RUN)
 export SETUP_WORK_YES            = $(YES)
 export SETUP_WORK_JSON           = $(JSON)
 export SETUP_WORK_VERBOSE        = $(VERBOSE)
+export SETUP_WORK_WITH_UV        = $(UV)
+export SETUP_WORK_WITH_AGENTS    = $(AGENTS)
+export SETUP_WORK_HARNESSES      = $(HARNESSES)
+export SETUP_WORK_LOCAL_MODEL    = $(LOCAL)
+export SETUP_WORK_CHECK_UPDATES  = $(UPDATES)
 export SETUP_WORK_ENGINE_ARGS    = $(ENGINE_ARGS)
 ifeq ($(FOREGROUND),1)
 export SETUP_WORK_DETACH = 0
@@ -59,7 +66,7 @@ define require
 		echo "ошибка: укажите $(1), например make $@ $(1)=$(3)" >&2; exit 2; fi
 endef
 
-.PHONY: help init registries bootstrap sync doctor hardware hardware-json version \
+.PHONY: help setup init registries bootstrap sync doctor hardware hardware-json version \
 	config-show config-validate models recommend model-pull model-list model-info \
 	model-remove zip-join engine-install engine-status serve serve-auto serve-stop \
 	serve-status serve-logs serve-test harness-list harness-install harness-update \
@@ -73,27 +80,31 @@ help: ## Показать эту справку
 	@printf '\n\033[1mС чего начать\033[0m\n'
 	@printf '  make init SETUP_WORK_HOME=~/nfs/setup-work   # папка на NFS, переживает контейнер\n'
 	@printf '  . ~/nfs/setup-work/env.sh                    # в каждом новом контейнере\n'
-	@printf '  make bootstrap                               # pip/npm/uv + uv + окружение + Node.js\n'
+	@printf '  make setup                                   # инфраструктура → агенты/GigaChat → GPU\n'
 	@printf '  make doctor\n'
 	@printf '\n  DRY_RUN=1 — только показать действия · YES=1 — подтвердить всё · JSON=1 — JSON\n\n'
 
 init: ## Шаблоны настроек (+ env.sh, если задан SETUP_WORK_HOME=папка на NFS)
 	@sh scripts/bootstrap.sh --init
 
-registries: ## Записать PyPI/npm из bootstrap.env в pip.conf, uv.toml и .npmrc
+setup: ## Настроить всё по порядку [UV=1 AGENTS=1|0 HARNESSES=a,b LOCAL=1|0 UPDATES=1|0]
+	@sh scripts/bootstrap.sh --setup
+
+registries: ## Записать PyPI/npm из bootstrap.env в pip.conf и .npmrc
 	@sh scripts/bootstrap.sh --registries-only
 
-bootstrap: ## registries → uv → окружение проекта → Node.js/npm (из npm registry)
+bootstrap: ## registries → окружение проекта → Node.js/npm (из npm registry)
 	@sh scripts/bootstrap.sh
 	@$(CLI) bootstrap
 
-sync: $(VENV_STAMP) ## Пересобрать окружение проекта (uv sync через корпоративный PyPI)
-
-# bootstrap.sh перепривязывает uv.lock к корпоративному индексу из uv.toml.
-$(VENV_STAMP): uv.lock pyproject.toml
+sync: ## Установить зависимости проекта через корпоративный PyPI
 	@sh scripts/bootstrap.sh --sync-only
 
-doctor: $(VENV_STAMP) ## Диагностика: инструменты, pip/uv/npm, HDFS, железо, движки
+# При изменении зависимостей или установщика обновить окружение.
+$(VENV_STAMP): pyproject.toml scripts/bootstrap.sh Makefile
+	@sh scripts/bootstrap.sh --sync-only
+
+doctor: $(VENV_STAMP) ## Диагностика: инструменты, pip/npm, HDFS, железо, движки
 	@$(CLI) doctor
 
 ##@ 2. Модели и движки (из corporate.yaml)
@@ -186,15 +197,15 @@ version: $(VENV_STAMP) ## Версия
 	@$(CLI) version
 
 test: $(VENV_STAMP) ## Тесты
-	@$(UV) run --no-sync pytest
+	@$(VENV_PYTHON) -m pytest
 
 lint: $(VENV_STAMP) ## Линтер и проверка форматирования
-	@$(UV) run --no-sync ruff check .
-	@$(UV) run --no-sync ruff format --check .
+	@$(VENV_PYTHON) -m ruff check .
+	@$(VENV_PYTHON) -m ruff format --check .
 
 format: $(VENV_STAMP) ## Отформатировать код
-	@$(UV) run --no-sync ruff format .
-	@$(UV) run --no-sync ruff check --fix .
+	@$(VENV_PYTHON) -m ruff format .
+	@$(VENV_PYTHON) -m ruff check --fix .
 
 check: lint test config-validate ## Линтер + тесты + конфигурация
 

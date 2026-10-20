@@ -10,7 +10,9 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import re
 import shlex
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,7 @@ from .config import BinarySpec, Config, HarnessSpec
 from .diagnostics import detect_tool, version_satisfies
 from .errors import MissingDependencyError, NotFoundError, UsageError
 from .runner import Runner, probe, which
-from .steps import Step, ensure_executable
+from .steps import Step, ensure_executable, execute
 
 MANIFEST = ".setup-work.json"
 _GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
@@ -72,7 +74,7 @@ def link_target(cfg: Config, name: str, spec: HarnessSpec, b: BinarySpec) -> Pat
 def _interpreter(cfg: Config, name: str, spec: HarnessSpec, kind: str) -> str:
     if kind == "sh":
         return "/bin/sh"
-    if kind == "python" and (spec.source == "pypi" or spec.install.method == "uv"):
+    if kind == "python" and (spec.source == "pypi" or spec.install.method == "pip"):
         return str(harness_root(cfg, name) / ".venv" / "bin" / "python")
     exe = {"node": "node", "python": "python3", "bun": "bun"}[kind]
     return which(exe, [cfg.bin_dir]) or exe
@@ -90,7 +92,7 @@ def binary_target(cfg: Config, name: str, spec: HarnessSpec, binary: str) -> Pat
     root = harness_root(cfg, name)
     if spec.source in ("npm",) or (spec.install.method == "npm"):
         return root / "node_modules" / ".bin" / binary
-    if spec.source == "pypi" or spec.install.method == "uv":
+    if spec.source == "pypi" or spec.install.method == "pip":
         return root / ".venv" / "bin" / binary
     src = root / "src" if spec.source == "git" else Path(spec.path or "").expanduser()
     return src / binary
@@ -125,10 +127,16 @@ def _check_requirements(cfg: Config, spec: HarnessSpec) -> list[str]:
             problems.append(
                 f"нужен Node.js {spec.requires['node']}, найден {node.version}; make bootstrap"
             )
-    if (spec.source == "pypi" or spec.install.method == "uv") and not which("uv", [cfg.bin_dir]):
-        problems.append("uv не найден; выполните make bootstrap")
+    if spec.source == "pypi" or spec.install.method == "pip":
+        py = _python_executable(spec)
+        if not which(py, [cfg.bin_dir]):
+            problems.append(
+                f"Python {spec.install.python or '3.12'} не найден; установите его на этой машине"
+            )
     if spec.source == "git" and not which("git"):
         problems.append("git не найден; установите его на этой машине")
+    if spec.install.method == "setup" and not which("bash"):
+        problems.append("bash не найден; он нужен для запуска setup.sh")
     for cmd in spec.requires_commands:
         if not which(cmd, [cfg.bin_dir]):
             problems.append(f"обязательная команда {cmd!r} не найдена в PATH")
@@ -143,6 +151,7 @@ def plan_install(
     ref: str | None = None,
     update: bool = False,
     allow_build: bool = False,
+    revision: str | None = None,
 ) -> HarnessPlan:
     spec = get_spec(cfg, name).model_copy(deep=True)
     if version:
@@ -170,12 +179,11 @@ def plan_install(
 
     existing = read_manifest(cfg, name)
     if existing and not update:
-        same = existing.get("version") == (spec.version or spec.ref)
+        same = existing.get("recipe") == _recipe(spec)
         if same:
             plan.warnings.append(f"{name} {existing.get('version')} уже установлен")
             return plan
 
-    uv = which("uv", [cfg.bin_dir]) or "uv"
     npm = which("npm", [cfg.bin_dir]) or "npm"
     git = which("git") or "git"
     s = plan.steps
@@ -199,17 +207,16 @@ def plan_install(
             )
         )
     elif spec.source == "pypi":
-        s += _uv_env_steps(uv, root, spec)
+        s += _pip_env_steps(root, spec)
         s.append(
             Step(
                 "command",
                 f"установить {spec.package}=={spec.version}",
                 argv=[
-                    uv,
+                    str(root / ".venv" / "bin" / "python"),
+                    "-m",
                     "pip",
                     "install",
-                    "--python",
-                    str(root / ".venv" / "bin" / "python"),
                     f"{spec.package}=={spec.version}",
                 ],
                 timeout=1800,
@@ -218,6 +225,7 @@ def plan_install(
     else:
         if spec.source == "git":
             src = root / "src"
+            fetch_ref = revision or spec.ref
             if not (spec.repository and spec.ref):  # гарантируется проверкой HarnessSpec
                 raise UsageError(
                     f"Git-харнесс {name} требует repository и ref в config/harnesses.yaml"
@@ -244,7 +252,16 @@ def plan_install(
                 Step(
                     "command",
                     f"загрузить {spec.ref}",
-                    argv=[git, "-C", str(src), "fetch", "--tags", "origin", "--", spec.ref],
+                    argv=[
+                        git,
+                        "-C",
+                        str(src),
+                        "fetch",
+                        "--tags",
+                        spec.repository if spec.install.method == "setup" else "origin",
+                        "--",
+                        fetch_ref,
+                    ],
                     env=_GIT_ENV,
                     timeout=900,
                 )
@@ -275,6 +292,25 @@ def plan_install(
             "запускает код сборки самого проекта"
         )
         builds = spec.install.build_steps
+        if spec.install.method == "setup":
+            plan.needs_confirmation = False
+            s.append(
+                Step(
+                    "call",
+                    "подготовить постоянные каталоги харнесса",
+                    action=lambda runner: _prepare_setup_dirs(root),
+                )
+            )
+            s.append(
+                Step(
+                    "command",
+                    f"запустить {spec.install.script}: установка агента и GigaChat API",
+                    argv=["bash", spec.install.script, *spec.install.args],
+                    cwd=src,
+                    env=_setup_env(cfg, name),
+                    timeout=None,
+                )
+            )
         if builds:
             trusted = bool(
                 spec.git_host
@@ -300,18 +336,17 @@ def plan_install(
                         timeout=3600,
                     )
                 )
-        if spec.install.method == "uv":
-            s += _uv_env_steps(uv, root, spec)
+        if spec.install.method == "pip":
+            s += _pip_env_steps(root, spec)
             s.append(
                 Step(
                     "command",
                     f"установить {src} в окружение харнесса",
                     argv=[
-                        uv,
+                        str(root / ".venv" / "bin" / "python"),
+                        "-m",
                         "pip",
                         "install",
-                        "--python",
-                        str(root / ".venv" / "bin" / "python"),
                         str(src),
                     ],
                     timeout=1800,
@@ -368,16 +403,29 @@ def plan_install(
     return plan
 
 
-def _uv_env_steps(uv: str, root: Path, spec: HarnessSpec) -> list[Step]:
+def _python_executable(spec: HarnessSpec) -> str:
+    version = spec.install.python or "3.12"
+    if version == f"{sys.version_info.major}.{sys.version_info.minor}":
+        return sys.executable
+    return f"python{version}"
+
+
+def _pip_env_steps(root: Path, spec: HarnessSpec) -> list[Step]:
     py = spec.install.python or "3.12"
     venv = root / ".venv"
     return [
         Step(
             "command",
-            f"создать окружение Python {py} environment",
-            argv=[uv, "venv", "--python", py, str(venv)],
+            f"создать окружение Python {py}",
+            argv=[_python_executable(spec), "-m", "venv", str(venv)],
             when=lambda: not (venv / "bin" / "python").exists(),
-        )
+        ),
+        Step(
+            "command",
+            "подготовить pip в окружении харнесса",
+            argv=[str(venv / "bin" / "python"), "-m", "ensurepip"],
+            when=lambda: not probe([str(venv / "bin" / "python"), "-m", "pip", "--version"]).ok,
+        ),
     ]
 
 
@@ -395,6 +443,7 @@ def write_manifest(cfg: Config, name: str, spec: HarnessSpec, runner: Runner) ->
         "package": spec.package,
         "version": spec.version or spec.ref,
         "commit": commit,
+        "recipe": _recipe(spec),
         "binaries": {b.name: str(cfg.bin_dir / b.name) for b in spec.binary_specs},
         "links": {
             str(cfg.bin_dir / b.name): str(link_target(cfg, name, spec, b))
@@ -404,6 +453,134 @@ def write_manifest(cfg: Config, name: str, spec: HarnessSpec, runner: Runner) ->
     }
     root.mkdir(parents=True, exist_ok=True)
     (root / MANIFEST).write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _recipe(spec: HarnessSpec) -> dict[str, Any]:
+    """Сохранить параметры установки для сравнения при следующем запуске."""
+    result = spec.model_dump(mode="json")
+    result["install"].pop("start", None)
+    return result
+
+
+def _setup_env(cfg: Config, name: str) -> dict[str, str]:
+    root = harness_root(cfg, name)
+    return {
+        "SETUP_WORK_BACKEND": "gigachat",
+        "SETUP_WORK_HARNESS_HOME": str(root),
+        "SETUP_WORK_HARNESS_CONFIG": str(root / "config"),
+        "SETUP_WORK_HARNESS_BIN": str(root / "bin"),
+        "PATH": os.pathsep.join([str(root / "bin"), str(cfg.bin_dir), os.environ.get("PATH", "")]),
+    }
+
+
+def _prepare_setup_dirs(root: Path) -> None:
+    for folder in (root / "config", root / "bin"):
+        folder.mkdir(parents=True, exist_ok=True)
+
+
+def _start_existing(cfg: Config, name: str, spec: HarnessSpec, runner: Runner) -> str:
+    if not spec.install.start:
+        runner.info(f"{name}: установка сохранена; команда запуска API отдельно не задана")
+        return "unconfigured"
+    runner.run(spec.install.start, cwd=checkout_dir(cfg, name, spec), env=_setup_env(cfg, name))
+    return "started"
+
+
+def remote_revision(spec: HarnessSpec, runner: Runner) -> str:
+    """Прочитать точную ревизию ветки/тега, не меняя рабочую копию."""
+    ref = spec.ref or ""
+    if re.fullmatch(r"[0-9a-f]{7,40}", ref):
+        return ref
+    result = runner.run(
+        [
+            "git",
+            "ls-remote",
+            "--",
+            spec.repository or "",
+            ref,
+            f"refs/heads/{ref}",
+            f"refs/tags/{ref}",
+            f"refs/tags/{ref}^{{}}",
+        ],
+        env=_GIT_ENV,
+        capture=True,
+        mutating=False,
+        timeout=60,
+    )
+    refs = dict(line.split()[::-1] for line in result.stdout.splitlines() if len(line.split()) == 2)
+    # Для аннотированного тега нужен коммит, а не объект тега.
+    for key in (f"refs/tags/{ref}^{{}}", ref, f"refs/heads/{ref}", f"refs/tags/{ref}"):
+        if key in refs:
+            return refs[key]
+    raise NotFoundError(f"ревизия {ref!r} не найдена в {spec.repository}")
+
+
+def setup_repository(
+    cfg: Config, name: str, runner: Runner, *, check_updates: bool = True
+) -> dict[str, Any]:
+    """Установить агент через его setup.sh; изменение ревизии требует согласия."""
+    spec = get_spec(cfg, name)
+    if spec.source != "git" or spec.install.method != "setup":
+        raise UsageError(f"пайплайн требует source: git и install.method: setup для {name}")
+    if "CHANGE-ME" in f"{spec.repository} {spec.ref}":
+        raise UsageError(f"заполните repository и ref для {name} в harnesses.yaml")
+    existing = read_manifest(cfg, name)
+    if runner.dry_run:
+        plan = plan_install(cfg, name, update=True)
+        runner.info(f"{name}: проверить ревизию {spec.ref}; обновление — после подтверждения")
+        execute(plan.steps, runner, cfg.data_dir)
+        return {"name": name, "status": "planned", "ref": spec.ref}
+    same_recipe = bool(existing and existing.get("recipe") == _recipe(spec))
+    if existing and not check_updates and same_recipe:
+        return {
+            "name": name,
+            "status": "kept",
+            "commit": existing.get("commit"),
+            "runtime": _start_existing(cfg, name, spec, runner),
+        }
+    revision = remote_revision(spec, runner)
+    current = (existing or {}).get("commit") or ""
+    src = harness_root(cfg, name) / "src"
+    checkout = probe(["git", "-C", str(src), "rev-parse", "HEAD"])
+    checkout_current = checkout.ok and checkout.stdout.strip() == current
+    if existing and current.startswith(revision) and same_recipe and checkout_current:
+        runner.info(f"{name}: установленная ревизия актуальна ({current[:12]})")
+        return {
+            "name": name,
+            "status": "current",
+            "commit": current,
+            "runtime": _start_existing(cfg, name, spec, runner),
+        }
+    if existing:
+        runner.info(f"{name}: установлено {current[:12] or '?'}, доступно {revision[:12]}")
+        if not runner.confirm(f"Обновить {name} и повторить {spec.install.script}?"):
+            installed_spec = (
+                HarnessSpec.model_validate(existing["recipe"]) if existing.get("recipe") else spec
+            )
+            installed_spec.install.start = spec.install.start
+            return {
+                "name": name,
+                "status": "declined",
+                "commit": current,
+                "runtime": _start_existing(cfg, name, installed_spec, runner),
+            }
+    if (src / ".git").is_dir():
+        dirty = runner.run(
+            ["git", "-C", str(src), "status", "--porcelain", "--untracked-files=no"],
+            capture=True,
+            mutating=False,
+        )
+        if dirty.stdout.strip():
+            raise UsageError(f"в {src} есть изменения; сохраните их перед установкой {name}")
+    plan = plan_install(cfg, name, update=True, revision=revision)
+    execute(plan.steps, runner, cfg.data_dir)
+    write_manifest(cfg, name, plan.spec, runner)
+    manifest = read_manifest(cfg, name) or {}
+    return {
+        "name": name,
+        "status": "updated" if existing else "installed",
+        "commit": manifest.get("commit"),
+    }
 
 
 def plan_remove(cfg: Config, name: str) -> list[Step]:

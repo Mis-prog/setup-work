@@ -80,7 +80,7 @@ def test_expand_path_defaults():
                 "source": "git",
                 "repository": "file:///etc",
                 "ref": "main",
-                "install": {"method": "uv"},
+                "install": {"method": "pip"},
             },
             "должен быть URL https",
         ),
@@ -89,7 +89,7 @@ def test_expand_path_defaults():
                 "source": "git",
                 "repository": "--upload-pack=touch /tmp/x",
                 "ref": "main",
-                "install": {"method": "uv"},
+                "install": {"method": "pip"},
             },
             "должен быть URL https",
         ),
@@ -98,7 +98,7 @@ def test_expand_path_defaults():
                 "source": "git",
                 "repository": "ext::sh -c id",
                 "ref": "main",
-                "install": {"method": "uv"},
+                "install": {"method": "pip"},
             },
             "должен быть URL https",
         ),
@@ -106,7 +106,7 @@ def test_expand_path_defaults():
             {
                 "source": "git",
                 "repository": "https://bitbucket.corp.example/scm/a/b.git",
-                "install": {"method": "uv"},
+                "install": {"method": "pip"},
             },
             "заполните ref",
         ),
@@ -115,7 +115,7 @@ def test_expand_path_defaults():
                 "source": "git",
                 "repository": "https://bitbucket.corp.example/scm/a/b.git",
                 "ref": "-x",
-                "install": {"method": "uv"},
+                "install": {"method": "pip"},
             },
             "неверное значение ref для Git",
         ),
@@ -158,7 +158,7 @@ def test_valid_private_git_harness_via_ssh():
             "source": "git",
             "repository": "ssh://git@bitbucket.corp.example:7999/team/agent.git",
             "ref": "v1.4.0",
-            "install": {"method": "uv"},
+            "install": {"method": "pip"},
             "environment": {"required": ["OPENAI_BASE_URL", "OPENAI_API_KEY"]},
         }
     )
@@ -171,7 +171,7 @@ def test_branch_ref_is_not_considered_pinned():
             "source": "git",
             "repository": "https://bitbucket.corp.example/scm/a/b.git",
             "ref": "main",
-            "install": {"method": "uv"},
+            "install": {"method": "pip"},
         }
     )
     assert not h.pinned

@@ -1,12 +1,11 @@
 """План установки и его выполнение.
 
 План можно вывести через --dry-run или --json. Шаги: command — команда argv,
-download — загрузка с SHA256, extract — безопасная распаковка, link — ссылка,
+download — загрузка по HTTPS, extract — безопасная распаковка, link — ссылка,
 manual — инструкция для ручного выполнения. Произвольный код shell не используется."""
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import stat
@@ -42,7 +41,6 @@ class Step:
     argv: list[str] | None = None
     cwd: Path | None = None
     env: dict[str, str] | None = None
-    sha256: str | None = None
     src: Path | None = None
     dest: Path | None = None
     content: str | None = None
@@ -81,32 +79,19 @@ class Step:
         }
 
 
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def download_verified(url: str, dest: Path, sha256: str, timeout: float = 120) -> Path:
-    """Загрузить с учётом прокси и проверить перед перемещением на место."""
+def download(url: str, dest: Path, timeout: float = 120) -> Path:
+    """Загрузить по HTTPS во временный файл и атомарно переместить на место."""
     if not url.startswith("https://"):
         raise SetupWorkError(f"загрузка разрешена только по HTTPS: {url}")
-    if dest.exists() and sha256_file(dest) == sha256:
-        return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=dest.name + ".", suffix=".part", dir=dest.parent)
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "setup-work"})  # noqa: S310
-        with urllib.request.urlopen(req, timeout=timeout) as resp, os.fdopen(fd, "wb") as out:  # noqa: S310
-            shutil.copyfileobj(resp, out, 1 << 20)
-        got = sha256_file(Path(tmp))
-        if got != sha256:
-            raise SetupWorkError(
-                f"не совпадает SHA256 для {url}\n  ожидается {sha256}\n  получено {got}",
-                hint="файл удалён; проверьте прокси, зеркало и закреплённую контрольную сумму",
-            )
+        with (
+            os.fdopen(fd, "wb") as out,
+            urllib.request.urlopen(req, timeout=timeout) as resp,  # noqa: S310
+        ):
+            shutil.copyfileobj(resp, out)
         os.replace(tmp, dest)
     finally:
         if os.path.exists(tmp):
@@ -249,9 +234,6 @@ def _run_special(step: Step, runner: Runner) -> None:
         )
         return
     # fetch: сохранить установочный архив в кэш под закреплённым именем
-    if step.dest.exists() and step.sha256 and sha256_file(step.dest) == step.sha256:
-        runner.info(f"  используется кэш {step.dest.name}")
-        return
     got = artifacts.fetch_archive(cfg, step.artifact, runner, name=step.dest.name)
     if runner.dry_run:
         return
@@ -260,10 +242,6 @@ def _run_special(step: Step, runner: Runner) -> None:
         shutil.copyfile(got, step.dest)
         if got.parent == step.dest.parent or "artifacts" in got.parts:
             got.unlink(missing_ok=True)
-    want = step.artifact.sha256 or step.sha256
-    if want and sha256_file(step.dest) != want:
-        step.dest.unlink()
-        raise SetupWorkError(f"не совпадает SHA256 для {step.artifact.uri}(ожидается {want})")
 
 
 def ensure_executable(path: Path) -> None:

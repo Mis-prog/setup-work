@@ -8,19 +8,18 @@ on:
 permissions:
   contents: read
 
-# CI runs outside the corporate network: give uv a package index explicitly
-# (on the machines it comes from ~/.config/uv/uv.toml, written by `make registries`).
+# CI runs outside the corporate network: give pip a package index explicitly
+# (on the machines it comes from ~/.config/pip/pip.conf, written by `make registries`).
 env:
-  UV_DEFAULT_INDEX: https://pypi.org/simple
+  PIP_INDEX_URL: https://pypi.org/simple
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
         with:
-          version: "0.12.13"
           python-version: "3.12"
       - run: make sync
       - run: make lint
@@ -40,9 +39,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
         with:
-          version: "0.12.13"
           python-version: ${{ matrix.python }}
       - run: make sync
       - run: make test

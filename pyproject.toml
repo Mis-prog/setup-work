@@ -27,7 +27,7 @@ dependencies = [
 [project.scripts]
 setup-work = "setup_work.cli:main"
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "ruff>=0.8",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import tarfile
 
@@ -40,25 +39,21 @@ def test_safe_extract_ok(tmp_path):
     assert (tmp_path / "out" / "pkg" / "bin" / "tool").read_bytes() == b"hi"
 
 
-def test_download_requires_https_and_checksum(tmp_path, monkeypatch):
+def test_download_is_atomic_and_requires_https(tmp_path, monkeypatch):
     with pytest.raises(SetupWorkError, match="только по HTTPS"):
-        st.download_verified("http://example.com/x", tmp_path / "x", "0" * 64)
-
-    class Resp(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(st.urllib.request, "urlopen", lambda req, timeout: Resp(b"payload"))
-    with pytest.raises(SetupWorkError, match="не совпадает SHA256"):
-        st.download_verified("https://example.com/x", tmp_path / "x", "0" * 64)
-    assert not (tmp_path / "x").exists()
-    assert not list(tmp_path.glob("*.part"))
-    good = hashlib.sha256(b"payload").hexdigest()
-    st.download_verified("https://example.com/x", tmp_path / "x", good)
+        st.download("http://example.com/x", tmp_path / "x")
+    monkeypatch.setattr(st.urllib.request, "urlopen", lambda req, timeout: io.BytesIO(b"payload"))
+    st.download("https://example.com/x", tmp_path / "x")
     assert (tmp_path / "x").read_bytes() == b"payload"
+
+    def fail(req, timeout):
+        raise OSError("connection lost")
+
+    monkeypatch.setattr(st.urllib.request, "urlopen", fail)
+    with pytest.raises(OSError, match="connection lost"):
+        st.download("https://example.com/x", tmp_path / "x")
+    assert (tmp_path / "x").read_bytes() == b"payload"
+    assert not list(tmp_path.glob("*.part"))
 
 
 def test_make_link_refuses_foreign_files(tmp_path):
@@ -128,24 +123,11 @@ def _corp_tools(cfg, **uris):
     return cfg
 
 
-def test_plan_uv_from_corporate_source(cfg, monkeypatch):
-    monkeypatch.setattr(bs, "_platform", lambda: ("Linux", "x86_64"))
-    monkeypatch.setattr(bs, "_is_musl", lambda: False)
-    steps = bs.plan_uv(_corp_tools(cfg, uv="hdfs:///tools/uv/{name}"))
-    fetch = steps[0]
-    assert fetch.kind == "fetch"
-    assert fetch.artifact.uri == "hdfs:///tools/uv/uv-0.12.13-x86_64-unknown-linux-gnu.tar.gz"
-    assert fetch.sha256 == cfg.defaults.tools["uv"].sha256["x86_64-unknown-linux-gnu"]
-    assert [s.dest.name for s in steps if s.kind == "link"] == ["uv", "uvx"]
-
-
 def test_tools_never_fall_back_to_public_hosts(cfg, monkeypatch):
     monkeypatch.setattr(bs, "_platform", lambda: ("Darwin", "arm64"))
     monkeypatch.setenv("NPM_CONFIG_USERCONFIG", str(cfg.user_dir / "npmrc"))
     for key in ("SETUP_WORK_NPM_REGISTRY", "NPM_CONFIG_REGISTRY", "npm_config_registry"):
         monkeypatch.delenv(key, raising=False)
-    with pytest.raises(NotFoundError, match="не задан корпоративный источник"):
-        bs.plan_uv(cfg)
     with pytest.raises(NotFoundError, match="npm registry"):
         bs.plan_node(cfg)
     monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env([]))
@@ -164,12 +146,12 @@ def test_plan_node_targets(cfg, monkeypatch):
 
 def test_idempotent_when_satisfied(cfg, monkeypatch):
     tools = [
-        ToolStatus("uv", True, "0.12.0", "/x/uv"),
+        ToolStatus("python", True, "3.12.0", "/x/python", satisfies=True),
         ToolStatus("node", True, "24.1.0", "/n", satisfies=True),
         ToolStatus("npm", True, "12.2.0", "/npm"),
     ]
     monkeypatch.setattr(bs, "detect_environment", lambda cfg, names=None: _env(tools))
-    plans = bs.plan_tools(cfg, ["uv", "node"])
+    plans = bs.plan_tools(cfg, ["python", "node"])
     assert all(p.status == "satisfied" and not p.steps for p in plans)
 
 
@@ -177,3 +159,13 @@ def test_engines_only_from_corporate_artifacts(cfg, hw_a100x4):
     for engine in ("llama.cpp", "vllm"):
         with pytest.raises(NotFoundError, match="не задан корпоративный артефакт"):
             bs.plan_engine(cfg, engine, hw_a100x4)
+
+
+def test_optional_uv_uses_corporate_pip_and_separate_environment(cfg, monkeypatch):
+    monkeypatch.setenv("PIP_INDEX_URL", "https://pypi.corp/simple")
+    steps = bs.plan_uv(cfg)
+    python = cfg.tools_dir / "uv" / cfg.defaults.tools["uv"].version / "bin/python"
+    assert steps[0].argv[1:3] == ["-m", "venv"]
+    assert steps[1].argv[:4] == [str(python), "-m", "pip", "install"]
+    assert steps[1].argv[-1] == "uv==0.12.13"
+    assert [step.dest.name for step in steps if step.kind == "link"] == ["uv", "uvx"]

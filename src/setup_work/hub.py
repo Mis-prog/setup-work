@@ -33,7 +33,7 @@ def model_artifact(cfg: Config, model_id: str, variant: Variant) -> ArtifactRef 
     if ref is not None:
         return ref
     if variant.source:
-        return ArtifactRef(uri=variant.source, sha256=variant.sha256)
+        return ArtifactRef(uri=variant.source)
     return None
 
 

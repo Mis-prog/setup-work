@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
@@ -69,17 +70,20 @@ class DownloadDefaults(Strict):
 class ToolPin(Strict):
     version: str
     min_version: str | None = None
-    sha256: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("sha256")
-    @classmethod
-    def _hex(cls, v: dict[str, str]) -> dict[str, str]:
-        for target, digest in v.items():
-            if not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise ValueError(
-                    f"SHA256 для {target!r} должен содержать 64 шестнадцатеричных символа"
-                )
-        return v
+
+class SetupDefaults(Strict):
+    uv: bool = False
+    agents: bool | None = None
+    harnesses: list[str] = Field(default_factory=list)
+    check_updates: bool = True
+    local_model: bool | None = None
+    model: str | None = None
+    engine: Literal["llama.cpp", "vllm"] | None = None
+    task: Literal["general", "coding", "reasoning", "agents", "embedding"] = "coding"
+    context: int = Field(8192, ge=256)
+    concurrency: int = Field(1, ge=1)
+    start_local: bool = True
 
 
 class Defaults(Strict):
@@ -88,6 +92,7 @@ class Defaults(Strict):
     recommend: RecommendDefaults = Field(default_factory=RecommendDefaults)
     downloads: DownloadDefaults = Field(default_factory=DownloadDefaults)
     tools: dict[str, ToolPin] = Field(default_factory=dict)
+    setup: SetupDefaults = Field(default_factory=SetupDefaults)
 
 
 # --------------------------------------------------------------------------- модели
@@ -127,7 +132,6 @@ class Variant(Strict):
     dtype: Literal["bf16", "fp16", "fp32"] | None = None
     repository: str | None = None  # идентификатор исходного репозитория org/name, только справочно
     source: str | None = None  # URI корпоративного артефакта: hdfs://, /путь, https://
-    sha256: str | None = None  # контрольная сумма архива из source
     files: list[str] | None = None
     size_gb: float = Field(gt=0)
     engines: list[str]
@@ -248,10 +252,21 @@ class ModelCatalog(Strict):
 
 
 class HarnessInstall(Strict):
-    method: Literal["npm", "uv", "none"] | None = None
+    method: Literal["setup", "npm", "pip", "none"] | None = None
+    script: str = "setup.sh"
+    args: list[str] = Field(default_factory=list)
+    # Необязательная команда запуска уже установленного API после пересоздания контейнера.
+    start: list[str] | None = None
     python: str | None = None
     # Одна команда argv или список команд, выполняемых по порядку в каталоге исходников.
     build: list[str] | list[list[str]] | None = None
+
+    @field_validator("script")
+    @classmethod
+    def _script(cls, value: str) -> str:
+        if not value or Path(value).is_absolute() or ".." in Path(value).parts:
+            raise ValueError("install.script должен оставаться внутри репозитория")
+        return value
 
     @property
     def build_steps(self) -> list[list[str]]:
@@ -350,7 +365,11 @@ class HarnessSpec(Strict):
         if s == "local" and not self.path:
             raise ValueError("для source: local заполните path")
         if s in ("git", "local") and self.install.method is None:
-            raise ValueError(f"source {s} требует install.method: npm, uv либо none")
+            raise ValueError(f"source {s} требует install.method: setup, npm, pip либо none")
+        if self.install.method == "setup" and s not in ("git", "local"):
+            raise ValueError("install.method: setup требует source: git либо local")
+        if self.install.method == "setup" and self.install.build:
+            raise ValueError("для install.method: setup команды сборки находятся в setup.sh")
         for b in self.binaries:
             name = b if isinstance(b, str) else b.name
             if not re.fullmatch(r"[\w.-]+", name) or name.startswith("."):
@@ -419,7 +438,7 @@ def validate_artifact_uri(uri: str) -> str:
 
 class ArtifactRef(Strict):
     uri: str
-    sha256: str | None = None
+    version: str | None = None
     format: Literal["zip", "zip-parts", "tar.gz", "tar", "dir", "file"] | None = None
     keep_archive: bool | None = None
     description: str = ""
@@ -428,15 +447,6 @@ class ArtifactRef(Strict):
     @classmethod
     def _uri(cls, v: str) -> str:
         return validate_artifact_uri(v)
-
-    @field_validator("sha256")
-    @classmethod
-    def _sha(cls, v: str | None) -> str | None:
-        if v is not None and not re.fullmatch(r"[0-9a-f]{64}", v):
-            raise ValueError(
-                "sha256 должен содержать 64 шестнадцатеричных символа в нижнем регистре"
-            )
-        return v
 
     @property
     def effective_format(self) -> str:
@@ -472,7 +482,15 @@ class CorporateConfig(Strict):
     trusted_git_hosts: list[str] = Field(default_factory=list)
     models: dict[str, ArtifactRef] = Field(default_factory=dict)  # модель:вариант → артефакт
     engines: dict[str, EngineArtifact] = Field(default_factory=dict)  # llama.cpp | vllm
-    tools: dict[str, ArtifactRef] = Field(default_factory=dict)  # архивы uv или Node.js
+    tools: dict[str, ArtifactRef] = Field(default_factory=dict)  # архивы Node.js
+    jars: dict[str, ArtifactRef | None] = Field(default_factory=dict)
+
+    @field_validator("jars")
+    @classmethod
+    def _jars(cls, value: dict[str, ArtifactRef | None]) -> dict[str, ArtifactRef | None]:
+        if any(not _NAME_RE.fullmatch(name) for name in value):
+            raise ValueError("имя JAR должно содержать строчные латинские буквы, цифры, . _ -")
+        return value
 
     @field_validator("env")
     @classmethod
@@ -496,7 +514,7 @@ class CorporateConfig(Strict):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.env or self.models or self.engines or self.tools)
+        return bool(self.env or self.models or self.engines or self.tools or self.jars)
 
 
 # --------------------------------------------------------------------------- загрузка
@@ -714,17 +732,26 @@ class Config:
         return self.data_dir / "harnesses"
 
     @property
+    def runtime_dir(self) -> Path:
+        value = os.environ.get("SETUP_WORK_RUNTIME_DIR")
+        return (
+            expand_path(value)
+            if value
+            else Path(tempfile.gettempdir()) / f"setup-work-{os.getuid()}"
+        )
+
+    @property
     def engines_dir(self) -> Path:
-        return self.data_dir / "engines"
+        return self.runtime_dir / "engines"
 
     @property
     def artifacts_dir(self) -> Path:
-        return self.data_dir / "artifacts"
+        return self.runtime_dir / "artifacts"
 
     @property
     def models_dir(self) -> Path:
         v = os.environ.get("SETUP_WORK_MODEL_DIR")
-        return expand_path(v) if v else self.data_dir / "models"
+        return expand_path(v) if v else self.runtime_dir / "models"
 
     @property
     def tools_dir(self) -> Path:
@@ -740,6 +767,7 @@ class Config:
                 "state_dir": str(self.state_dir),
                 "bin_dir": str(self.bin_dir),
                 "harness_dir": str(self.harness_dir),
+                "runtime_dir": str(self.runtime_dir),
                 "engines_dir": str(self.engines_dir),
                 "models_dir": str(self.models_dir),
             },

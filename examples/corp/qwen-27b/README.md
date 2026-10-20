@@ -33,10 +33,8 @@
   Источник архитектуры — [Qwen/Qwen3.6-27B/config.json](https://huggingface.co/Qwen/Qwen3.6-27B/raw/main/config.json),
   указанная базовая модель конвертации Unsloth.
 
-SHA256 самого GGUF:
-`5ed60d0af4650a854b1755bd392f9aef4872643dc25a254bc68043fa638392a0`.
-Эта сумма проверяет прямую загрузку GGUF. Веса vLLM берутся из папок с частями
-`<имя>-1-of-N.zip`, для них в corporate.yaml указано `format: zip-parts`.
+Веса vLLM берутся из папок с частями `<имя>-1-of-N.zip`;
+для них в corporate.yaml указано `format: zip-parts`.
 
 ## Архитектура и ограничения оценки памяти
 

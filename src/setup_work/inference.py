@@ -378,8 +378,8 @@ class ServerManager:
     def __init__(self, cfg: Config, runner: Runner) -> None:
         self.cfg = cfg
         self.runner = runner
-        self.dir = cfg.state_dir / "serve"
-        self.log_dir = cfg.state_dir / "logs"
+        self.dir = cfg.runtime_dir / "serve"
+        self.log_dir = cfg.runtime_dir / "logs"
 
     # ------------------------------------------------------------- файлы состояния
     def _state_path(self, name: str) -> Path:
