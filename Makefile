@@ -54,6 +54,15 @@ export SETUP_WORK_HARNESSES      = $(HARNESSES)
 export SETUP_WORK_LOCAL_MODEL    = $(LOCAL)
 export SETUP_WORK_CHECK_UPDATES  = $(UPDATES)
 export SETUP_WORK_ENGINE_ARGS    = $(ENGINE_ARGS)
+ifneq ($(METRICS_AGENT),)
+export SETUP_WORK_METRICS_AGENT = $(METRICS_AGENT)
+endif
+ifneq ($(METRICS_UPSTREAM),)
+export SETUP_WORK_METRICS_UPSTREAM = $(METRICS_UPSTREAM)
+endif
+ifneq ($(METRICS_PORT),)
+export SETUP_WORK_METRICS_PORT = $(METRICS_PORT)
+endif
 ifeq ($(FOREGROUND),1)
 export SETUP_WORK_DETACH = 0
 endif
@@ -70,7 +79,7 @@ endef
 	config-show config-validate models recommend model-pull model-list model-info \
 	model-remove zip-join engine-install engine-status serve serve-auto serve-stop \
 	serve-status serve-logs serve-test harness-list harness-install harness-update \
-	harness-remove harness-doctor test lint format check clean
+	harness-remove harness-doctor metrics-status metrics-upload metrics-proxy test lint format check clean
 
 ##@ 1. Настройка (все настройки — в $SETUP_WORK_HOME/config или ~/.config/setup-work/)
 help: ## Показать эту справку
@@ -179,6 +188,16 @@ harness-remove: $(VENV_STAMP) ## Удалить: NAME=
 
 harness-doctor: $(VENV_STAMP) ## Проверить (все установленные, если NAME пуст)
 	@$(CLI) harness doctor
+
+##@ 5. Метрики агентов
+metrics-status: $(VENV_STAMP) ## Расход токенов и очередь выгрузки [JSON=1]
+	@$(CLI) metrics status
+
+metrics-upload: $(VENV_STAMP) ## Выгрузить очередь в metrics.hdfs_uri [JSON=1 DRY_RUN=1]
+	@$(CLI) metrics upload
+
+metrics-proxy: $(VENV_STAMP) ## Сбор usage: METRICS_AGENT= METRICS_UPSTREAM=http://127.0.0.1:8000/v1 [METRICS_PORT=8766]
+	@$(CLI) metrics proxy
 
 ##@ Прочее
 hardware: $(VENV_STAMP) ## Железо [JSON=1]

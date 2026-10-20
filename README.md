@@ -59,6 +59,176 @@ make setup DRY_RUN=1 AGENTS=1 HARNESSES=qwen-code LOCAL=0
 также указать `AGENTS` и `LOCAL`. `DRY_RUN=1` показывает действия без установки,
 загрузок и изменения состояния; незаданные ответы показываются как будущие вопросы.
 
+## Метрики использования агентов и HDFS
+
+Сбор выключен по умолчанию. В `config/corporate.yaml` задайте папку отдела:
+
+```yaml
+metrics:
+  enabled: true
+  hdfs_uri: hdfs:///ml/metrics/agent-usage
+  department: data-engineering
+  # user_id: employee-123  # иначе логин ОС; задавайте отдельно на каждом рабочем месте
+  upload_interval_s: 300
+```
+
+Сначала проверьте доступ пользователя к этой папке и билет Kerberos (`kinit`).
+Выгрузка использует существующие `hdfs.cli`, `hdfs.extra_args`, `hdfs.kerberos`.
+Токены берутся из `usage` ответов API: это учёт запросов, включая шаги агента,
+инструментальные циклы и реальные повторные обращения к модели.
+
+### Автоматический сбор через локальный API-прокси
+
+Для агента с HTTP API Chat Completions, Responses или Messages запустите:
+
+```bash
+make metrics-proxy METRICS_AGENT=qwen-code METRICS_UPSTREAM=http://127.0.0.1:8000/v1
+```
+
+`METRICS_UPSTREAM` — текущий адрес модели или **уже настроенного GigaChat-адаптера**
+из репозитория агента. Прокси пересылает заголовки авторизации и ответы, включая SSE.
+Прокси не получает и не обновляет OAuth-токены самостоятельно. Для корпоративного
+HTTPS CA можно задать `SSL_CERT_FILE`.
+
+В настройках **самого агента** замените адрес API на `http://127.0.0.1:8766/v1`.
+Если агент читает стандартную переменную, пример запуска в другом терминале:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8766/v1
+# Запустите qwen-code его обычной командой.
+```
+
+Без изменения адреса API запросы проходят мимо сборщика и не учитываются.
+Настройки внутренних форков находятся в их `setup.sh`; setup-work не может
+автоматически определить их адреса, формат конфигурации и способ авторизации.
+Для каждого агента нужен отдельный экземпляр прокси с его именем и портом
+(`METRICS_PORT=8767` и т. д.). Так запросы правильно относятся к агентам.
+Слушается только `127.0.0.1`. Прокси работает в текущем терминале до Ctrl+C;
+для постоянной работы включите команду в принятый в отделе менеджер процессов.
+Сбор начинается с момента подключения; предыдущая история сессий не импортируется.
+
+Прокси сохраняет одну запись на POST к `/chat/completions`, `/completions`,
+`/responses` или `/messages`. GET `/models` и проверки доступности не считаются.
+В streaming Chat Completions добавляется `stream_options.include_usage=true`.
+Если адаптер не принимает этот параметр, запускайте CLI с `--no-include-usage`;
+для полного учёта адаптер всё равно должен возвращать финальный `usage`.
+Прокси не повторяет запросы к модели при ошибках.
+
+Пока прокси запущен, очередь автоматически выгружается каждые `upload_interval_s`.
+Вручную проверить или выгрузить её можно так:
+
+```bash
+make metrics-status
+make metrics-status JSON=1
+make metrics-upload
+make metrics-upload DRY_RUN=1
+```
+
+При недоступном HDFS, истёкшем Kerberos-билете или завершении процесса записи
+сохраняются в `<state_dir>/metrics/usage.sqlite3`. После восстановления доступа
+выгрузка повторяется. Храните `SETUP_WORK_HOME` на постоянном томе. SQLite требует
+работающих файловых блокировок; для NFS это необходимо проверить при развёртывании.
+Перед завершением работы можно выполнить `make metrics-upload`.
+
+### Интеграция через hook API-адаптера
+
+Если агент нельзя направить через прокси, его API-адаптер может записывать метрики
+после каждого запроса. Пример из Python в окружении, где установлен setup-work:
+
+```python
+from setup_work.config import Config
+from setup_work.metrics import record_usage
+
+record_usage(
+    Config(),
+    agent="hermes",
+    model=response["model"],
+    request_id=local_request_id,  # свой уникальный ID реального вызова API
+    usage=response.get("usage"),
+    session_id=session_id,  # необязательно
+)
+```
+
+Либо вызов CLI без зависимости от Python-окружения агента:
+
+```bash
+.venv/bin/python -m setup_work metrics record \
+  --agent hermes --model GigaChat --request-id request-uuid \
+  --input-tokens 1500 --output-tokens 300 --cached-input-tokens 500
+
+# JSON ответа API можно передать через stdin: --response-file -
+.venv/bin/python -m setup_work metrics record \
+  --agent hermes --model GigaChat --request-id request-uuid \
+  --response-file /path/to/response.json
+```
+
+Выбирайте один способ сбора для одного запроса, чтобы hook и прокси не учитывали
+его дважды. При повторе **записи метрик** сохраняйте `request_id`: повтор отбрасывается.
+Новый реальный вызов API, даже с тем же текстом, должен получать новый ID.
+Передавайте финальный расход отдельного запроса; накопительный расход всей сессии
+и промежуточные SSE-счётчики передавать нельзя. При записи исторических событий
+есть `--timestamp` в ISO 8601 с часовым поясом. Без `usage` счётчики будут `null`.
+
+Внутренним `setup.sh` и `install.start` передаются `SETUP_WORK_METRICS_ENABLED`,
+`SETUP_WORK_METRICS_AGENT`, `SETUP_WORK_METRICS_PYTHON` (Python setup-work) и
+`SETUP_WORK_METRICS_STATE_DIR`. Скрипт форка должен сохранить нужные параметры
+в своей конфигурации/команде запуска. Для hook вызов выглядит как
+`"$SETUP_WORK_METRICS_PYTHON" -m setup_work metrics record ...`.
+При использовании только hook настройте периодический `metrics upload` через
+планировщик отдела; автоматический таймер работает внутри `metrics proxy`.
+
+### Формат для агрегации
+
+```text
+hdfs:///ml/metrics/agent-usage/
+  dt=2026-10-20/device_id=<device-id>/<batch-id>.jsonl
+```
+
+Одна строка JSON — один запрос API. Поля версии 1: `schema_version`, `event_id`,
+`timestamp` (UTC), `device_id`, `user_id`, `department`, `agent`, `model`, `request_id`,
+`session_id`, `http_status`, `outcome`, `duration_ms`, `usage_status`, `input_tokens`,
+`output_tokens`, `total_tokens`, `cached_input_tokens`, `cache_creation_input_tokens`,
+`reasoning_tokens`. `outcome`: `ok`, `error`, `interrupted`; `usage_status`: `reported`,
+`missing`. Нет текстов запросов/ответов, файлов проекта, ключей и заголовков авторизации.
+`user_id` по умолчанию — логин ОС; `device_id` автоматически выводится из ID установки
+и hostname. Для нескольких пользователей не используйте общую учётную запись ОС;
+при необходимости задавайте `user_id` и `device_id` отдельно на каждом компьютере.
+
+`input_tokens` включает cache read/write; `output_tokens` включает reasoning;
+`total_tokens = input_tokens + output_tokens`. Cache и reasoning — вложенные
+счётчики, **не прибавляйте их к total повторно**. Нормализуются поля OpenAI-совместимых
+API, GigaChat (`precached_prompt_tokens`) и Anthropic. Это число токенов, а не
+стоимость: тарифы и скидки за cache вычисляются отдельно по модели/провайдеру.
+Если API не вернул usage, поток оборвался или usage оказался некорректным,
+запрос может иметь `usage_status=missing` и `null` вместо счётчиков. Если usage уже
+получен до обрыва, он сохраняется вместе с `outcome=interrupted`. Суммы отражают
+известный расход; рядом обязательно считайте число `missing` и долю покрытия.
+
+Пакеты ограничены `batch_size` (по умолчанию 1000), разделены по дате UTC и устройству.
+Сначала записывается скрытый `.pending`, затем выполняется rename в `.jsonl`.
+При повторе содержимое и имя пакета сохраняются; уже опубликованный пакет
+проверяется и подтверждается без создания копии. При смене `hdfs_uri` незавершённые
+пакеты дописываются в прежний адрес, новые используют новый. Выгруженные записи
+локально сохраняются для просмотра и дедупликации; автоматической очистки пока нет.
+
+Пример агрегации в Spark, после накопления нескольких пакетов:
+
+```python
+from pyspark.sql import functions as F
+
+raw = spark.read.option("basePath", "hdfs:///ml/metrics/agent-usage").json(
+    "hdfs:///ml/metrics/agent-usage/dt=*/device_id=*/*.jsonl"
+)
+events = raw.filter(F.col("schema_version") == 1).dropDuplicates(["event_id"])
+metrics = events.groupBy("dt", "department", "user_id", "agent", "model").agg(
+    F.count("event_id").alias("requests"),
+    F.sum("total_tokens").alias("known_total_tokens"),
+    F.sum("input_tokens").alias("known_input_tokens"),
+    F.sum("output_tokens").alias("known_output_tokens"),
+    F.sum(F.when(F.col("usage_status") == "missing", 1).otherwise(0)).alias("missing_usage"),
+)
+```
+
 ## Конфигурация
 
 | Файл | Назначение |
@@ -66,12 +236,59 @@ make setup DRY_RUN=1 AGENTS=1 HARNESSES=qwen-code LOCAL=0
 | `config/bootstrap.env` | Адреса PyPI/npm, файлы токенов, CA и прокси |
 | `config/defaults.yaml` | Версии инструментов и параметры сценария `setup` |
 | `config/harnesses.yaml` | Внутренние Git-репозитории агентов и их `setup.sh` |
-| `config/corporate.yaml` | Источники JAR, моделей и движков |
+| `config/corporate.yaml` | Источники JAR, моделей, движков и метрики HDFS |
 | `config/models.yaml` | Каталог моделей и параметры для оценки памяти |
 
 `SETUP_WORK_USER_CONFIG_DIR` выбирает каталог настроек. Без него используются
 `$SETUP_WORK_HOME/config`, затем каталог XDG `~/.config/setup-work`.
 Встроенные YAML из `config/` служат базовым слоем; пользовательские значения имеют приоритет.
+
+### Обновление через rsync с сохранением внутренних настроек
+
+Если на целевой машине заполнены `config/` и уже есть `.git`, обновляйте только
+код, исключив эти каталоги. Сначала посмотрите список изменений:
+
+```bash
+rsync -av --dry-run --itemize-changes \
+  --exclude='/.git/' \
+  --exclude='/config/' \
+  --exclude='/examples/corp/' \
+  --exclude='/.venv/' \
+  --exclude='/.env' --exclude='/.env.*' \
+  --exclude='__pycache__/' \
+  --exclude='/.pytest_cache/' --exclude='/.ruff_cache/' \
+  --exclude='/build/' --exclude='/dist/' \
+  /path/to/new/setup-work/ user@host:/path/to/existing/setup-work/
+```
+
+Замените пути и адрес машины своими, затем повторите команду без `--dry-run`.
+Для копирования на той же машине последний аргумент может быть обычным путём.
+Завершающий `/` у источника означает копирование содержимого каталога.
+Не добавляйте `--delete`: этот пример сохраняет существующие файлы, включая
+удалённые из новой версии. Старые файлы, если они мешают обновлению, нужно
+разбирать отдельно. Если вы изменяли другие файлы кода, rsync их перезапишет;
+сохраните такие изменения перед обновлением.
+
+На целевой машине `.git` и его история останутся прежними:
+
+```bash
+git status --short
+git diff -- config/
+git diff -- src/ Makefile pyproject.toml
+make sync
+make config-validate
+```
+
+`git diff` показывает изменения относительно прежнего коммита целевой копии;
+новые файлы видны в `git status` как untracked. Тег из исходной копии через такой
+rsync не переносится: Git-метаданные исключены. Новые параметры конфигурации,
+например секцию `metrics` версии 4.5.0, добавляйте в сохранённые YAML вручную,
+сверяясь с README или шаблонами исходной копии.
+
+Для дальнейших обновлений удобнее хранить заполненные конфиги вне репозитория,
+например в `$SETUP_WORK_HOME/config`, и указывать этот путь через
+`SETUP_WORK_USER_CONFIG_DIR`. Тогда внутренние адреса, реестры и параметры HDFS
+сохраняются отдельно от обновляемого кода и шаблонов `config/`.
 
 ### Реестры, токены и uv
 

@@ -43,3 +43,14 @@ engines:
 jars:
   trino: null
   iceberg: null
+
+# Учёт токенов отдела. После настройки API-прокси или hook включите сбор.
+metrics:
+  enabled: false
+  hdfs_uri: null  # например hdfs:///ml/metrics/agent-usage
+  department: null
+  user_id: null   # по умолчанию пользователь ОС
+  device_id: null # по умолчанию ID установки + hostname; не задавайте один ID всему отделу
+  upload_interval_s: 300
+  batch_size: 1000
+  upload_timeout_s: 60

@@ -476,8 +476,35 @@ class HdfsConfig(Strict):
     timeout_s: int = Field(6 * 3600, ge=60)
 
 
+class MetricsConfig(Strict):
+    enabled: bool = False
+    hdfs_uri: str | None = None
+    user_id: str | None = Field(None, min_length=1, max_length=200)
+    department: str | None = Field(None, min_length=1, max_length=200)
+    device_id: str | None = Field(None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    batch_size: int = Field(1000, ge=1, le=10000)
+    upload_interval_s: int = Field(300, ge=10)
+    upload_timeout_s: int = Field(60, ge=1)
+
+    @field_validator("hdfs_uri")
+    @classmethod
+    def _destination(cls, value: str | None) -> str | None:
+        if value is not None:
+            validate_artifact_uri(value)
+            if (
+                not value.startswith(("hdfs:/", "viewfs://"))
+                or any(c in value for c in "*?[]{}#\\")
+                or ".." in value.split("/")
+            ):
+                raise ValueError(
+                    "metrics.hdfs_uri: нужен каталог hdfs:// или viewfs:// без шаблонов"
+                )
+        return value
+
+
 class CorporateConfig(Strict):
     hdfs: HdfsConfig = Field(default_factory=HdfsConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     env: dict[str, str] = Field(default_factory=dict)
     trusted_git_hosts: list[str] = Field(default_factory=list)
     models: dict[str, ArtifactRef] = Field(default_factory=dict)  # модель:вариант → артефакт

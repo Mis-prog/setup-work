@@ -469,6 +469,10 @@ def _setup_env(cfg: Config, name: str) -> dict[str, str]:
         "SETUP_WORK_HARNESS_HOME": str(root),
         "SETUP_WORK_HARNESS_CONFIG": str(root / "config"),
         "SETUP_WORK_HARNESS_BIN": str(root / "bin"),
+        "SETUP_WORK_METRICS_ENABLED": "1" if cfg.corporate.metrics.enabled else "0",
+        "SETUP_WORK_METRICS_AGENT": name,
+        "SETUP_WORK_METRICS_PYTHON": sys.executable,
+        "SETUP_WORK_METRICS_STATE_DIR": str(cfg.state_dir),
         "PATH": os.pathsep.join([str(root / "bin"), str(cfg.bin_dir), os.environ.get("PATH", "")]),
     }
 

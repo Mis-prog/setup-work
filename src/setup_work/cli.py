@@ -17,7 +17,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from . import __version__, corporate, hub, pipeline
+from . import __version__, corporate, hub, metrics, pipeline
 from . import bootstrap as bs
 from . import harness as hz
 from .config import Config
@@ -45,11 +45,13 @@ model_app = typer.Typer(help="Загрузка и управление веса�
 harness_app = typer.Typer(help="Установка и обслуживание харнессов агентов.", no_args_is_help=True)
 server_app = typer.Typer(help="Управление серверами инференса.", no_args_is_help=True)
 engine_app = typer.Typer(help="Установка движков llama.cpp и vLLM.", no_args_is_help=True)
+metrics_app = typer.Typer(help="Учёт токенов агентов и выгрузка в HDFS.", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 app.add_typer(model_app, name="model")
 app.add_typer(harness_app, name="harness")
 app.add_typer(server_app, name="server")
 app.add_typer(engine_app, name="engine")
+app.add_typer(metrics_app, name="metrics")
 
 OK = "[green]✔[/]"
 BAD = "[red]✘[/]"
@@ -1293,6 +1295,149 @@ def clean_cmd(
         r.info(f"  {escape(s.render())}")
     r.require_confirmation(f"Удалить {len(steps)} объектов?", destructive=True)
     execute(steps, r, cfg.data_dir)
+
+
+# ======================================================================== метрики
+
+
+@metrics_app.command("status")
+def metrics_status(json_out: bool = _json_opt()) -> None:
+    """Показать расход токенов, пробелы учёта и размер очереди выгрузки."""
+    data = metrics.summary(STATE.cfg)
+    if _set_json(json_out):
+        emit_json(data)
+        return
+    console.print(f"Сбор метрик: {'включён' if data['enabled'] else 'отключён'}")
+    console.print(f"HDFS: {escape(data['hdfs_uri'] or 'не настроен')}")
+    console.print(
+        f"Запросов: {data['events']}; ожидают выгрузки: {data['pending_events']}; "
+        f"без usage: {data['missing_usage']}; ошибок: {data['failed_requests']}"
+    )
+    table = Table("Дата UTC", "Агент", "Модель", "Запросов", "Вход", "Выход", "Всего", "Без usage")
+    for group in data["groups"]:
+        table.add_row(
+            *(
+                escape(str(group[k]))
+                for k in (
+                    "date",
+                    "agent",
+                    "model",
+                    "requests",
+                    "input_tokens",
+                    "output_tokens",
+                    "total_tokens",
+                    "missing_usage",
+                )
+            )
+        )
+    console.print(table)
+
+
+@metrics_app.command("record")
+def metrics_record(
+    agent: str = typer.Option(..., envvar="SETUP_WORK_METRICS_AGENT"),
+    model: str = typer.Option(...),
+    request_id: str = typer.Option(
+        ..., help="Уникальный ID запроса; сохраните его при повторе hook."
+    ),
+    input_tokens: int | None = typer.Option(None, min=0),
+    output_tokens: int | None = typer.Option(None, min=0),
+    cached_input_tokens: int = typer.Option(0, min=0),
+    response_file: Path | None = typer.Option(
+        None, help="JSON ответа API с полем usage; '-' — stdin."
+    ),
+    session_id: str | None = typer.Option(None),
+    timestamp: str | None = typer.Option(
+        None, help="ISO 8601 с часовым поясом; по умолчанию сейчас."
+    ),
+    json_out: bool = _json_opt(),
+) -> None:
+    """Записать usage одного запроса из hook агента или API-адаптера."""
+    import json
+
+    _set_json(json_out)
+    if response_file is not None and (
+        input_tokens is not None or output_tokens is not None or cached_input_tokens
+    ):
+        raise UsageError("выберите --response-file либо счётчики токенов")
+    usage = None
+    if response_file is not None:
+        try:
+            raw = (
+                sys.stdin.read()
+                if str(response_file) == "-"
+                else response_file.read_text(encoding="utf-8")
+            )
+            response = json.loads(raw)
+            if not isinstance(response, dict):
+                raise ValueError("нужен объект JSON")
+            usage = response.get("usage")
+        except (OSError, ValueError) as exc:
+            raise UsageError("не удалось прочитать JSON ответа API") from exc
+    elif input_tokens is not None or output_tokens is not None or cached_input_tokens:
+        if input_tokens is None or output_tokens is None:
+            raise UsageError("укажите оба счётчика: --input-tokens и --output-tokens")
+        usage = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "input_tokens_details": {"cached_tokens": cached_input_tokens},
+        }
+    metrics.normalize_usage(usage)
+    if STATE.runner.dry_run:
+        data = {"dry_run": True, "agent": agent, "model": model, "request_id": request_id}
+    else:
+        data = metrics.record_usage(
+            STATE.cfg,
+            agent=agent,
+            model=model,
+            request_id=request_id,
+            usage=usage,
+            session_id=session_id,
+            timestamp=timestamp,
+        )
+    if STATE.json:
+        emit_json(data)
+    else:
+        STATE.runner.info(str(data))
+
+
+@metrics_app.command("upload")
+def metrics_upload(json_out: bool = _json_opt()) -> None:
+    """Выгрузить накопленные метрики в HDFS; при ошибке сохранить очередь для повтора."""
+    _set_json(json_out)
+    data = metrics.upload(STATE.cfg, STATE.runner)
+    if STATE.json:
+        emit_json(data)
+    else:
+        STATE.runner.info(str(data))
+
+
+@metrics_app.command("proxy")
+def metrics_proxy(
+    agent: str = typer.Option(..., envvar="SETUP_WORK_METRICS_AGENT"),
+    upstream: str = typer.Option(
+        ...,
+        envvar="SETUP_WORK_METRICS_UPSTREAM",
+        help="HTTP(S) URL API или локального GigaChat-адаптера.",
+    ),
+    port: int = typer.Option(8766, min=1, max=65535, envvar="SETUP_WORK_METRICS_PORT"),
+    include_usage: bool = typer.Option(
+        True,
+        "--include-usage/--no-include-usage",
+        help="Запрашивать usage для streaming Chat Completions.",
+    ),
+) -> None:
+    """Собирать usage API через 127.0.0.1 и периодически выгружать очередь в HDFS."""
+    from .metrics_proxy import serve_proxy
+
+    serve_proxy(
+        STATE.cfg,
+        STATE.runner,
+        agent=agent,
+        upstream=upstream,
+        port=port,
+        include_usage=include_usage,
+    )
 
 
 # ========================================================================= точка входа
