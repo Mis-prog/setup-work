@@ -28,6 +28,8 @@ jobs:
         run: SETUP_WORK_USER_CONFIG_DIR=examples/corp make config-validate
       - name: shellcheck stage-0 bootstrap
         run: shellcheck -s sh scripts/bootstrap.sh
+      - name: shellcheck standalone setup-lite
+        run: shellcheck -s sh scripts/setup-lite.sh
 
   test:
     needs: lint
