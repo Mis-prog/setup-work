@@ -2,7 +2,7 @@
 
 Каждый харнесс находится в <data_dir>/harnesses/<name>, команды доступны через
 ссылки в bin_dir. Глобальная установка пакетов не используется.
-Git использует существующие учётные данные без интерактивных запросов.
+При интерактивном setup Git запрашивает учётные данные и кеширует их в памяти.
 Сборка выполняет код проекта и требует разрешения согласно настройкам доверия."""
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .config import BinarySpec, Config, HarnessSpec
 from .diagnostics import detect_tool, version_satisfies
@@ -519,6 +520,46 @@ def remote_revision(spec: HarnessSpec, runner: Runner) -> str:
     raise NotFoundError(f"ревизия {ref!r} не найдена в {spec.repository}")
 
 
+def prepare_git_auth(cfg: Config, spec: HarnessSpec, runner: Runner) -> None:
+    """Один интерактивный вход на HTTPS-хост; пароль обрабатывает только Git."""
+    if runner.dry_run or not runner.interactive or not spec.repository:
+        return
+    url = urlsplit(spec.repository)
+    if url.scheme != "https":
+        return
+    host = url.netloc.rsplit("@", 1)[-1]
+    if host in runner.authenticated_git_hosts:
+        return
+    # Сокет должен быть на локальном томе, даже когда HOME/данные лежат на NFS.
+    cache_dir = cfg.runtime_dir / "git-credentials"
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cache_dir.chmod(0o700)
+    helper = f"cache --timeout=28800 --socket={shlex.quote(str(cache_dir / 'socket'))}"
+    key = f"credential.https://{host}.helper"
+    existing = runner.run(
+        ["git", "config", "--global", "--get-all", key],
+        capture=True,
+        check=False,
+        mutating=False,
+    )
+    if existing.returncode not in (0, 1):
+        raise UsageError("не удалось прочитать конфигурацию Git для входа в репозиторий")
+    if helper not in existing.stdout.splitlines():
+        runner.run(["git", "config", "--global", "--add", key, helper], capture=True)
+    runner.info(
+        f"Git: проверка доступа к {host}. При запросе введите логин и пароль/токен; "
+        "пароль не отображается. Учётные данные кешируются в памяти на 8 часов."
+    )
+    runner.run(
+        ["git", "ls-remote", "--", spec.repository, "HEAD"],
+        env={**_GIT_ENV, "GIT_TERMINAL_PROMPT": "1"},
+        capture=True,
+        mutating=False,
+        timeout=None,
+    )
+    runner.authenticated_git_hosts.add(host)
+
+
 def setup_repository(
     cfg: Config, name: str, runner: Runner, *, check_updates: bool = True
 ) -> dict[str, Any]:
@@ -542,6 +583,7 @@ def setup_repository(
             "commit": existing.get("commit"),
             "runtime": _start_existing(cfg, name, spec, runner),
         }
+    prepare_git_auth(cfg, spec, runner)
     revision = remote_revision(spec, runner)
     current = (existing or {}).get("commit") or ""
     src = harness_root(cfg, name) / "src"

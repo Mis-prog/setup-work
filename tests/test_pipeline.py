@@ -198,3 +198,12 @@ def test_local_dry_run_with_explicit_variant_never_fetches(cfg, hw_4090, monkeyp
     result = pipeline.local_model(cfg, hw_4090, Runner(dry_run=True, interactive=False))
     assert result["model"] == "qwen3-8b:q4_k_m" and result["status"] == "planned"
     assert not cfg.runtime_dir.exists()
+
+
+def test_setup_authenticates_before_fetch_even_for_pinned_commit(cfg, internal_repo, monkeypatch):
+    spec = harness.get_spec(cfg, "agent")
+    spec.ref = _git(internal_repo, "rev-parse", "HEAD")
+    calls = []
+    monkeypatch.setattr(harness, "prepare_git_auth", lambda *a: calls.append("login"))
+    result = harness.setup_repository(cfg, "agent", Runner(interactive=False))
+    assert result["status"] == "installed" and calls == ["login"]

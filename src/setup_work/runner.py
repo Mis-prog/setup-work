@@ -117,6 +117,7 @@ class Runner:
     verbose: bool = False
     log_dir: Path | None = None
     interactive: bool = field(default_factory=lambda: sys.stdin.isatty())
+    authenticated_git_hosts: set[str] = field(default_factory=set, repr=False)
 
     # ----------------------------------------------------------------- вывод
     def info(self, msg: str) -> None:
