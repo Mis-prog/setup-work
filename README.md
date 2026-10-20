@@ -254,10 +254,8 @@ rsync -av --dry-run --itemize-changes \
   --exclude='/config/' \
   --exclude='/examples/corp/' \
   --exclude='/.venv/' \
-  --exclude='/.env' --exclude='/.env.*' \
+  --exclude='/.env*' \
   --exclude='__pycache__/' \
-  --exclude='/.pytest_cache/' --exclude='/.ruff_cache/' \
-  --exclude='/build/' --exclude='/dist/' \
   /path/to/new/setup-work/ user@host:/path/to/existing/setup-work/
 ```
 
