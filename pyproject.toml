@@ -1,6 +1,6 @@
 [project]
 name = "setup-work"
-version = "4.5.2"
+version = "4.5.3"
 description = "Portable bootstrapper for AI/ML development environments: tooling, coding-agent harnesses, hardware-aware LLM selection and local inference."
 readme = "README.md"
 license = "MIT"
