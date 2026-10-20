@@ -274,14 +274,6 @@ fi
 py="${PYTHON:-python3}"
 command -v "$py" >/dev/null 2>&1 || die "требуется Python 3.11 или новее с модулями venv и pip" 3
 
-# Без явно настроенного индекса не обращаться к публичному PyPI.
-# pip config учитывает системный, пользовательский и PIP_CONFIG_FILE.
-if [ -n "$DRY_RUN" ] && [ -z "$SYNC_ONLY" ] && [ -n "${SETUP_WORK_PYPI_INDEX:-}" ]; then
-    : # setup_pypi выше показал план записи индекса.
-elif [ -z "${PIP_INDEX_URL:-}" ]; then
-    "$py" -m pip config get global.index-url >/dev/null 2>&1 \
-        || die "не задан корпоративный PyPI: заполните SETUP_WORK_PYPI_INDEX в $CONFIG_DIR/bootstrap.env и выполните make registries" 2
-fi
 say "создание окружения проекта: venv + pip из настроенного PyPI"
 if [ -z "$DRY_RUN" ]; then
     "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
@@ -291,11 +283,44 @@ if [ ! -x "$ROOT/.venv/bin/python" ]; then
     run "$py" -m venv "$ROOT/.venv" \
         || die "не удалось создать .venv; установите модуль venv для выбранного Python" 3
 fi
-if [ -z "$DRY_RUN" ] && ! "$ROOT/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
-    run "$ROOT/.venv/bin/python" -m ensurepip \
-        || die "не удалось установить pip в .venv; установите модуль ensurepip или пересоздайте окружение" 3
+venv_py="$ROOT/.venv/bin/python"
+# Выбранный python3 может уже указывать на активную .venv без pip.
+# Проверять индекс до восстановления pip нельзя: это даёт ложную ошибку PyPI.
+if [ ! -x "$venv_py" ] || ! "$venv_py" -I -c 'import pip' >/dev/null 2>&1; then
+    run "$venv_py" -m ensurepip --upgrade \
+        || die "не удалось восстановить pip в .venv: проверьте ошибку ensurepip выше; новый Python не устанавливается" 3
 fi
-run "$ROOT/.venv/bin/python" -m pip install --disable-pip-version-check -e "$ROOT[dev]" \
+if [ -z "$DRY_RUN" ]; then
+    "$venv_py" -m pip --version \
+        || die "pip в .venv не запускается: проверьте PIP_CONFIG_FILE и ошибку выше" 3
+fi
+
+# Без явно настроенного индекса не обращаться к публичному PyPI.
+# Настройки проверяет тот же pip, который будет устанавливать зависимости.
+if [ -n "$DRY_RUN" ] && [ -z "$SYNC_ONLY" ] && [ -n "${SETUP_WORK_PYPI_INDEX:-}" ]; then
+    : # setup_pypi выше показал план записи индекса.
+elif [ -z "${PIP_INDEX_URL:-}" ]; then
+    if [ -n "$DRY_RUN" ] && { [ ! -x "$venv_py" ] || ! "$venv_py" -I -c 'import pip' >/dev/null 2>&1; }; then
+        say "  (dry-run) после восстановления pip проверить корпоративный индекс PyPI"
+    else
+        # config get выбирает один слой (user/site) и пропускает PIP_CONFIG_FILE.
+        # config list объединяет слои; значения с токенами остаются только в pipe.
+        "$venv_py" -m pip config list | "$venv_py" -I -c '
+import ast, sys
+values = {}
+for line in sys.stdin:
+    key, sep, raw = line.partition("=")
+    if sep and key in ("global.index-url", "install.index-url"):
+        try:
+            values[key] = ast.literal_eval(raw.strip())
+        except (ValueError, SyntaxError):
+            sys.exit(1)
+index = values.get("install.index-url", values.get("global.index-url"))
+sys.exit(0 if isinstance(index, str) and index.strip() else 1)
+' || die "не задан корпоративный PyPI: заполните SETUP_WORK_PYPI_INDEX в $CONFIG_DIR/bootstrap.env и выполните make registries" 2
+    fi
+fi
+run "$venv_py" -m pip install --disable-pip-version-check -e "$ROOT[dev]" \
     || die "pip install завершился с ошибкой; проверьте Python >= 3.11, доступ к PyPI и настройки pip" 1
 if [ -z "$DRY_RUN" ]; then
     touch "$ROOT/.venv/.setup-work-synced"
