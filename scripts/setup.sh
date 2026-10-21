@@ -1,25 +1,27 @@
 #!/bin/sh
-# setup-lite: облегчённая самодостаточная настройка рабочего места.
-# Один файл POSIX sh: корпоративные pip/npm → Node.js/npm из npm registry →
+# setup.sh: облегчённая самодостаточная настройка рабочего места.
+# Один файл POSIX sh: корпоративные pip/npm →
 # агенты из внутренних Git-репозиториев через их setup.sh →
-# при наличии GPU: llama.cpp, venv vLLM и модели из HDFS, NFS или HTTPS.
+# при наличии GPU: llama.cpp, venv vLLM, подходящие к ним модели из HDFS, NFS или HTTPS
+# и по желанию запуск модели.
 # Не нужны Python, репозиторий setup-work, sudo и правки профиля shell.
-# Нужны: sh, git, bash (для setup.sh агентов), curl, tar, awk, od;
-# для локальной модели — unzip и клиент hdfs (если источники в HDFS).
-# Автоподбор модели под GPU, запуск сервера, JAR и метрики не входят — для них есть make setup.
+# Нужны: sh, git, bash (для setup.sh агентов), awk, od; Node.js и npm — уже установленные;
+# для локальной модели — unzip, curl (для https://) и клиент hdfs (если источники в HDFS).
+# Автоподбор модели под GPU, JAR и метрики не входят — для них есть make setup.
 #
 # Заполните блок НАСТРОЙКИ (CHANGE-ME — заготовки), затем:
-#   sh setup-lite.sh --dry-run
-#   sh setup-lite.sh
+#   sh setup.sh --dry-run
+#   sh setup.sh
 #   . "$SETUP_WORK_HOME/env.sh"
-# Параметры: --dry-run --yes --agents=a,b --no-agents --no-node --no-updates
-#            --local --no-local --models=a,b --help
+# Параметры: --dry-run --yes --agents=a,b --no-agents --no-updates --reinstall=a,b
+#            --local --no-local --models=a,b --serve=имя --no-serve --help
 
 set -eu
 
 # ==== НАСТРОЙКИ ===============================================================
-# Постоянный каталог: реестры, Node.js, агенты, env.sh. Переменная окружения важнее.
-SW_HOME="${SETUP_WORK_HOME:-$HOME/nfs/setup-work}"
+# Основной каталог: реестры, агенты, env.sh. Пусто — каталог, где лежит этот скрипт.
+# Переменная окружения SETUP_WORK_HOME важнее.
+SW_HOME="${SETUP_WORK_HOME:-}"
 
 # Корпоративный PyPI для pip. Пустой PYPI_INDEX — шаг пропускается.
 # В AUTH_FILE — путь к файлу с токеном, не сам токен; пусто — без авторизации.
@@ -29,21 +31,16 @@ PYPI_AUTH_FILE='~/nfs/tokens/pypi-token.txt'
 PYPI_TRUSTED_HOST=''
 PIP_CERT_FILE=''
 
-# Корпоративный npm. Пустой NPM_REGISTRY — пропускаются npm и Node.js.
+# Корпоративный npm. Пустой NPM_REGISTRY — шаг пропускается.
 NPM_REGISTRY='https://CHANGE-ME-repo-host/repository/npm-group/'
-NPM_AUTH_FILE='~/nfs/tokens/npm-token.txt'
+NPM_AUTH_FILE='~/nfs/SberOSCBase64.txt'
 NPM_CAFILE=''
-NPM_STRICT_SSL='true'
+NPM_STRICT_SSL='false'
 NPM_OPTIONS='audit=false fetch-retries=5 save-exact=true'
-
-# Закреплённые версии Node.js и npm из npm registry.
-NODE_VERSION='24.20.0'
-NPM_VERSION='12.2.0'
 
 # Агенты по одному на строку: имя  репозиторий  ref  [скрипт, по умолчанию setup.sh].
 # ref — ветка, тег или коммит. Порядок строк — порядок установки.
 AGENTS='
-qwen-code  https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/qwen-code.git     CHANGE-ME
 opencode   https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/opencode.git      CHANGE-ME
 pi         https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/pi-mono.git       CHANGE-ME
 hermes     https://CHANGE-ME-bitbucket-host/scm/CHANGE-ME/hermes-agent.git  CHANGE-ME
@@ -75,6 +72,12 @@ MODELS='
 qwen3.8-27b-awq  hdfs:///CHANGE-ME/models/hf/qwen3.8-27b-awq/           zip-parts
 qwen3.6-27b-q4   hdfs:///CHANGE-ME/models/gguf/Qwen3.6-27B-Q4_K_M.gguf  file
 '
+# Движок модели: «gguf» в имени, пути или файлах — llama.cpp, иначе (каталог HF) — vLLM.
+# Предлагаются только модели для установленного движка; другие — через --models=имя.
+
+# Запуск модели после установки: OpenAI-совместимый API на этом адресе.
+SERVE_HOST='127.0.0.1'
+SERVE_PORT='30000'
 
 # Прокси, если нужен:
 # export HTTPS_PROXY=http://CHANGE-ME-proxy-host:3128
@@ -93,17 +96,19 @@ expand_home() {
     esac
 }
 usage() {
-    say "Использование: sh setup-lite.sh [параметры]"
+    say "Использование: sh setup.sh [параметры]"
     say "  --dry-run     показать действия без загрузок и изменений"
     say "  --yes         ответить «да» на все вопросы"
     say "  --no-registries  не записывать pip.conf и npmrc"
-    say "  --no-node     пропустить Node.js/npm"
     say "  --agents=a,b  установить эти агенты в указанном порядке, без вопросов о них"
     say "  --no-agents   пропустить агентов"
     say "  --no-updates  не проверять новые ревизии установленных агентов"
+    say "  --reinstall=a,b  переустановить этих агентов начисто (их config сохраняется)"
     say "  --local       установить движки и модели даже без GPU, без вопросов о них"
     say "  --no-local    пропустить локальную модель"
     say "  --models=a,b  загрузить только эти модели из MODELS, без вопросов о них"
+    say "  --serve=имя   запустить эту модель после установки, без вопроса"
+    say "  --no-serve    не предлагать запуск модели"
     say "На любой вопрос можно ответить «нет»: пропускается только этот шаг."
     say "Без терминала ответ по умолчанию «нет» — задайте ответы флагами или --yes."
     say "Настройки — в блоке НАСТРОЙКИ в начале файла."
@@ -113,12 +118,14 @@ DRY_RUN=
 YES=
 WITH_REGISTRIES=
 WITH_AGENTS=
-WITH_NODE=
 CHECK_UPDATES=1
 SELECTED=
+REINSTALL=
 WITH_LOCAL=
 SELECTED_MODELS=
 LOCAL_FLAG=
+SERVE=
+WITH_SERVE=
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
@@ -126,11 +133,13 @@ for arg in "$@"; do
         --agents=*) SELECTED=$(say "${arg#--agents=}" | tr ',' ' '); WITH_AGENTS=1 ;;
         --no-agents) WITH_AGENTS=0 ;;
         --no-registries) WITH_REGISTRIES=0 ;;
-        --no-node) WITH_NODE=0 ;;
         --no-updates) CHECK_UPDATES= ;;
+        --reinstall=*) REINSTALL=$(say "${arg#--reinstall=}" | tr ',' ' ') ;;
         --local) WITH_LOCAL=1; LOCAL_FLAG=1 ;;
         --no-local) WITH_LOCAL=0 ;;
         --models=*) SELECTED_MODELS=$(say "${arg#--models=}" | tr ',' ' '); WITH_LOCAL=${WITH_LOCAL:-1} ;;
+        --serve=*) SERVE=${arg#--serve=}; WITH_SERVE=1; WITH_LOCAL=${WITH_LOCAL:-1} ;;
+        --no-serve) WITH_SERVE=0 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "неизвестный аргумент: $arg" 2 ;;
     esac
@@ -165,11 +174,19 @@ run() {
 }
 
 LITE_TMP=
-cleanup() { if [ -n "$LITE_TMP" ]; then rm -rf "$LITE_TMP"; fi; }
+STTY_SAVED=
+cleanup() {
+    if [ -n "$STTY_SAVED" ]; then stty "$STTY_SAVED" </dev/tty 2>/dev/null || true; fi
+    if [ -n "$LITE_TMP" ]; then rm -rf "$LITE_TMP"; fi
+}
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # ---- каталоги и окружение для дочерних процессов --------------------------------
+if [ -z "$SW_HOME" ]; then
+    SW_HOME=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P) \
+        || die "не удалось определить каталог скрипта $0; задайте SETUP_WORK_HOME" 2
+fi
 SW_HOME=$(expand_home "$SW_HOME")
 case "$SW_HOME" in /*) ;; *) die "SETUP_WORK_HOME должен быть абсолютным путём: $SW_HOME" 2 ;; esac
 export SETUP_WORK_HOME="$SW_HOME"
@@ -215,41 +232,170 @@ write_private() {
     fi
 }
 
+# Скрытый ввод из терминала в HIDDEN; эхо возвращается и при Ctrl+C (cleanup).
+HIDDEN=
+read_hidden() {
+    printf '%s' "$1" >/dev/tty
+    STTY_SAVED=$(stty -g </dev/tty 2>/dev/null || true)
+    stty -echo </dev/tty 2>/dev/null || true
+    IFS= read -r HIDDEN </dev/tty || HIDDEN=
+    if [ -n "$STTY_SAVED" ]; then stty "$STTY_SAVED" </dev/tty 2>/dev/null || true; fi
+    STTY_SAVED=
+    printf '\n' >/dev/tty
+    HIDDEN=$(say "$HIDDEN" | tr -d ' \t\r\n')
+}
+
+# HTTP-код ответа реестра с токеном; токен передаётся curl через stdin, не в argv.
+# 000 — нет ответа или curl недоступен.
+registry_status() {
+    r_url=$1 r_auth=$2
+    shift 2
+    command -v curl >/dev/null 2>&1 || { say 000; return 0; }
+    printf '%s\n' "$r_auth" | curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+        -K - "$@" -- "$r_url" 2>/dev/null || true
+}
+
+pypi_token_status() {
+    set --
+    if [ -n "$PIP_CERT_FILE" ]; then set -- --cacert "$(expand_home "$PIP_CERT_FILE")"; fi
+    if [ -n "$PYPI_TRUSTED_HOST" ]; then set -- -k; fi
+    registry_status "${PYPI_INDEX%/}/pip/" "user = \"$PYPI_USER:$TOKEN\"" "$@"
+}
+
+npm_token_status() {
+    set -- -H 'Accept: application/vnd.npm.install-v1+json'
+    if [ -n "$NPM_CAFILE" ]; then set -- "$@" --cacert "$(expand_home "$NPM_CAFILE")"; fi
+    if [ "$NPM_STRICT_SSL" = false ]; then set -- "$@" -k; fi
+    registry_status "${NPM_REG}semver" "header = \"Authorization: Bearer $TOKEN\"" "$@"
+}
+
+# Токен из файла в TOKEN. В терминале: нет файла или реестр отклоняет токен — запросить
+# новый, проверить и сохранить в файл с правами 600. 1 — ввод пуст: шаг реестра пропускается.
+TOKEN=
+ensure_token() {
+    t_file=$1 t_label=$2 t_check=$3
+    TOKEN=
+    if [ -s "$t_file" ]; then
+        TOKEN=$(read_secret "$t_file" "токена $t_label")
+        t_code=$("$t_check")
+        case "$t_code" in
+            401|403) say "  $t_label: реестр отклонил токен из $t_file (HTTP $t_code)" ;;
+            2??|3??) say "  $t_label: токен действителен"; return 0 ;;
+            *) say "  $t_label: не удалось проверить токен (HTTP $t_code); используется как есть"; return 0 ;;
+        esac
+        if [ -z "$INTERACTIVE" ]; then
+            say "  замените токен в $t_file или запустите скрипт в терминале"
+            return 0
+        fi
+    elif [ -z "$INTERACTIVE" ]; then
+        die "нет файла токена $t_label: $t_file; создайте его или запустите скрипт в терминале — токен будет запрошен" 6
+    else
+        say "  $t_label: файл токена $t_file не найден"
+    fi
+    t_try=0
+    while [ "$t_try" -lt 3 ]; do
+        t_try=$((t_try + 1))
+        read_hidden "  Вставьте токен $t_label (ввод скрыт; пусто — пропустить шаг): "
+        TOKEN=$HIDDEN
+        [ -n "$TOKEN" ] || return 1
+        case "$TOKEN" in *'"'*|*'\'*) say "  токен содержит недопустимые символы \" или \\"; continue ;; esac
+        t_code=$("$t_check")
+        case "$t_code" in
+            401|403) say "  реестр отклонил токен (HTTP $t_code); попробуйте ещё раз"; continue ;;
+            2??|3??) say "  $t_label: токен действителен" ;;
+            *) say "  $t_label: не удалось проверить токен (HTTP $t_code); сохраняю как есть" ;;
+        esac
+        say "$TOKEN" | write_private "$t_file"
+        say "  токен сохранён в $t_file"
+        return 0
+    done
+    die "$t_label: токен не принят за 3 попытки; проверьте его в профиле реестра" 7
+}
+
+# Файл реестра уже совпадает с тем, что записал бы скрипт, а реестр не отклоняет токен.
+# Аргументы: файл, файл токена, имя, функция содержимого, функция проверки токена.
+registry_current() {
+    [ -s "$1" ] || return 1
+    TOKEN=
+    if [ -n "$2" ]; then
+        [ -s "$2" ] || return 1
+        TOKEN=$(read_secret "$2" "токена $3")
+    fi
+    [ "$("$4")" = "$(cat "$1")" ] || return 1
+    if [ -n "$2" ] && [ -z "$DRY_RUN" ]; then
+        case "$("$5")" in 401|403) return 1 ;; esac
+    fi
+    return 0
+}
+
 # ---- 1. реестры ---------------------------------------------------------------
 setup_pypi() {
     [ -n "$PYPI_INDEX" ] || { say "PyPI: не задан, шаг пропущен"; return 0; }
+    if [ "$WITH_REGISTRIES" = 0 ]; then say "PyPI: пропущен (--no-registries)"; return 0; fi
     case "$PYPI_INDEX" in
         *CHANGE-ME*) die "заполните PYPI_INDEX в блоке НАСТРОЙКИ: замените CHANGE-ME адресом корпоративного PyPI" 2 ;;
         https://*|http://*) ;;
         *) die "PYPI_INDEX должен начинаться с https://: $PYPI_INDEX" 2 ;;
     esac
     auth="${PYPI_AUTH_FILE:+$(expand_home "$PYPI_AUTH_FILE")}"
-    if [ "$WITH_REGISTRIES" = 0 ]; then say "PyPI: пропущен (--no-registries)"; return 0; fi
+    if registry_current "$PIP_CONFIG_FILE" "$auth" PyPI pypi_conf pypi_token_status; then
+        say "PyPI: уже настроен ($PIP_CONFIG_FILE)"
+        return 0
+    fi
+    if [ ! -e "$PIP_CONFIG_FILE" ] && f=$(pip_user_config); then
+        say "PyPI: уже настроен в $f"
+        return 0
+    fi
     if ! ask "Записать корпоративный PyPI $PYPI_INDEX в $PIP_CONFIG_FILE?"; then
         say "PyPI: пропущен"
         return 0
     fi
     say "PyPI: $PYPI_INDEX → $PIP_CONFIG_FILE${auth:+ (токен из $auth)}"
-    [ -n "$DRY_RUN" ] && return 0
-    index=$PYPI_INDEX
-    if [ -n "$auth" ]; then
-        tok=$(read_secret "$auth" "токена PyPI")
-        scheme=${index%%://*}
-        rest=${index#*://}
-        index="$scheme://$(urlencode "$PYPI_USER"):$(urlencode "$tok")@${rest#*@}"
+    if [ -n "$DRY_RUN" ]; then
+        if [ -n "$auth" ] && [ ! -s "$auth" ]; then say "  (dry-run) файла токена нет — токен будет запрошен"; fi
+        return 0
     fi
-    {
-        say "# Создано setup-lite.sh; файл перезаписывается при следующем запуске."
-        say "[global]"
-        say "index-url = $index"
-        if [ -n "$PYPI_TRUSTED_HOST" ]; then say "trusted-host = $PYPI_TRUSTED_HOST"; fi
-        if [ -n "$PIP_CERT_FILE" ]; then say "cert = $(expand_home "$PIP_CERT_FILE")"; fi
-    } | write_private "$PIP_CONFIG_FILE"
+    TOKEN=
+    if [ -n "$auth" ] && ! ensure_token "$auth" PyPI pypi_token_status; then
+        say "PyPI: пропущен"
+        return 0
+    fi
+    pypi_conf | write_private "$PIP_CONFIG_FILE"
 }
 
-NPM_REG=
+# Содержимое pip.conf с токеном из TOKEN.
+pypi_conf() {
+    index=$PYPI_INDEX
+    if [ -n "$TOKEN" ]; then
+        scheme=${index%%://*}
+        rest=${index#*://}
+        index="$scheme://$(urlencode "$PYPI_USER"):$(urlencode "$TOKEN")@${rest#*@}"
+    fi
+    say "# Создано setup.sh; файл перезаписывается при следующем запуске."
+    say "[global]"
+    say "index-url = $index"
+    if [ -n "$PYPI_TRUSTED_HOST" ]; then say "trusted-host = $PYPI_TRUSTED_HOST"; fi
+    if [ -n "$PIP_CERT_FILE" ]; then say "cert = $(expand_home "$PIP_CERT_FILE")"; fi
+}
+
+# Пользовательский pip.conf (например, от корпоративного скрипта) уже указывает на PYPI_INDEX.
+pip_user_config() {
+    want=$(say "${PYPI_INDEX%/}" | sed 's#^\([a-z]*://\)[^/@]*@#\1#')
+    for f in "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" \
+        "$HOME/Library/Application Support/pip/pip.conf" /etc/xdg/pip/pip.conf /etc/pip.conf; do
+        [ -f "$f" ] || continue
+        if sed -n 's/^[[:space:]]*index-url[[:space:]]*=[[:space:]]*//p' "$f" \
+            | sed -e 's#^\([a-z]*://\)[^/@]*@#\1#' -e 's#/*[[:space:]]*$##' | grep -qxF -- "$want"; then
+            say "$f"
+            return 0
+        fi
+    done
+    return 1
+}
+
 setup_npm() {
     [ -n "$NPM_REGISTRY" ] || { say "npm: не задан, шаг пропущен"; return 0; }
+    if [ "$WITH_REGISTRIES" = 0 ]; then say "npm: пропущен (--no-registries)"; return 0; fi
     case "$NPM_REGISTRY" in
         *CHANGE-ME*) die "заполните NPM_REGISTRY в блоке НАСТРОЙКИ: замените CHANGE-ME адресом корпоративного npm" 2 ;;
         https://*) ;;
@@ -264,124 +410,46 @@ setup_npm() {
         esac
     done
     auth="${NPM_AUTH_FILE:+$(expand_home "$NPM_AUTH_FILE")}"
-    # NPM_REG уже задан: Node.js можно установить и без записи npmrc.
-    if [ "$WITH_REGISTRIES" = 0 ]; then say "npm: пропущен (--no-registries)"; return 0; fi
+    if registry_current "$NPM_CONFIG_USERCONFIG" "$auth" npm npm_conf npm_token_status; then
+        say "npm: уже настроен ($NPM_CONFIG_USERCONFIG)"
+        return 0
+    fi
+    # ~/.npmrc от корпоративного скрипта: оставить его и не подменять своим npmrc.
+    if [ ! -e "$NPM_CONFIG_USERCONFIG" ] && [ -f "$HOME/.npmrc" ] \
+        && sed -n 's/^[[:space:]]*registry[[:space:]]*=[[:space:]]*//p' "$HOME/.npmrc" \
+            | sed 's#/*[[:space:]]*$#/#' | grep -qxF -- "$NPM_REG"; then
+        export NPM_CONFIG_USERCONFIG="$HOME/.npmrc"
+        say "npm: уже настроен в $HOME/.npmrc"
+        return 0
+    fi
     if ! ask "Записать корпоративный npm $NPM_REG в $NPM_CONFIG_USERCONFIG?"; then
         say "npm: пропущен"
         return 0
     fi
     say "npm: $NPM_REG → $NPM_CONFIG_USERCONFIG${auth:+ (токен из $auth)}"
-    [ -n "$DRY_RUN" ] && return 0
-    tok=
-    if [ -n "$auth" ]; then tok=$(read_secret "$auth" "токена npm"); fi
-    {
-        say "# Создано setup-lite.sh; файл перезаписывается при следующем запуске."
-        say "registry=$NPM_REG"
-        if [ -n "$tok" ]; then say "//${NPM_REG#*://}:_authToken=$tok"; fi
-        if [ -n "$NPM_CAFILE" ]; then say "cafile=$(expand_home "$NPM_CAFILE")"; fi
-        if [ -n "$NPM_STRICT_SSL" ]; then say "strict-ssl=$NPM_STRICT_SSL"; fi
-        for o in $NPM_OPTIONS; do say "$o"; done
-    } | write_private "$NPM_CONFIG_USERCONFIG"
-}
-
-# ---- 2. Node.js и npm из npm registry ---------------------------------------------
-node_target() {
-    case "$(uname -s)" in Darwin) s=darwin ;; Linux) s=linux ;; *) s= ;; esac
-    case "$(uname -m)" in x86_64|amd64) a=x64 ;; arm64|aarch64) a=arm64 ;; *) a= ;; esac
-    if [ -z "$s" ] || [ -z "$a" ]; then die "нет сборки Node.js для $(uname -s)/$(uname -m)" 4; fi
-    if [ "$s" = linux ] && ldd --version 2>&1 | grep -qi musl; then
-        die "Node.js из npm registry не поддерживает musl (Alpine); используйте glibc-образ" 4
-    fi
-    say "$s-$a"
-}
-
-# Загрузка tarball из настроенного реестра; токен передаётся curl через stdin, не в argv.
-fetch_npm() {
-    name=$1 version=$2 out=$3
-    if [ -s "$out" ]; then return 0; fi
-    url="$NPM_REG$name/-/$name-$version.tgz"
-    say "  загрузка $name@$version"
-    mkdir -p "$(dirname -- "$out")"
-    tok=
-    auth="${NPM_AUTH_FILE:+$(expand_home "$NPM_AUTH_FILE")}"
-    if [ -n "$auth" ]; then tok=$(read_secret "$auth" "токена npm"); fi
-    case "$tok" in *'"'*|*'\'*) die "токен npm содержит недопустимые символы" 2 ;; esac
-    set -- -fsSL --retry 3 --proto '=https' -o "$out.part"
-    if [ -n "$NPM_CAFILE" ]; then set -- "$@" --cacert "$(expand_home "$NPM_CAFILE")"; fi
-    if [ "$NPM_STRICT_SSL" = false ]; then set -- "$@" -k; fi
-    if [ -n "$tok" ]; then
-        printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -K - "$@" -- "$url"
-    else
-        curl "$@" -- "$url" </dev/null
-    fi || {
-        rm -f "$out.part"
-        die "не удалось загрузить $url; проверьте токен, наличие версии в реестре, прокси и NPM_CAFILE" 1
-    }
-    mv "$out.part" "$out"
-}
-
-install_node() {
-    if [ "$WITH_NODE" = 0 ]; then say "Node.js: пропущен (--no-node)"; return 0; fi
-    if [ -z "$NPM_REG" ]; then say "Node.js: npm registry не задан, шаг пропущен"; return 0; fi
-    case "$NODE_VERSION$NPM_VERSION" in *[!0-9.]*|'') die "задайте точные NODE_VERSION и NPM_VERSION" 2 ;; esac
-    have_node=$("$BIN_DIR/node" --version 2>/dev/null || true)
-    have_npm=$("$BIN_DIR/npm" --version 2>/dev/null || true)
-    if [ "$have_node" = "v$NODE_VERSION" ] && [ "$have_npm" = "$NPM_VERSION" ]; then
-        say "Node.js $NODE_VERSION и npm $NPM_VERSION уже установлены"
+    if [ -n "$DRY_RUN" ]; then
+        if [ -n "$auth" ] && [ ! -s "$auth" ]; then say "  (dry-run) файла токена нет — токен будет запрошен"; fi
         return 0
     fi
-    target=$(node_target)
-    pkg="node-$target"
-    if [ "$target" = darwin-arm64 ]; then pkg=node-bin-darwin-arm64; fi
-    root="$DATA_DIR/tools/node/$NODE_VERSION/npm-$NPM_VERSION/$target"
-    if ! ask "Установить Node.js $NODE_VERSION и npm $NPM_VERSION из $NPM_REG?"; then
-        say "Node.js: пропущен"
+    TOKEN=
+    if [ -n "$auth" ] && ! ensure_token "$auth" npm npm_token_status; then
+        say "npm: пропущен"
         return 0
     fi
-    say "Node.js: $pkg@$NODE_VERSION и npm@$NPM_VERSION из $NPM_REG → $root"
-    [ -n "$DRY_RUN" ] && return 0
-    need curl
-    need tar
-    cache="$DATA_DIR/tools/downloads/npm"
-    fetch_npm "$pkg" "$NODE_VERSION" "$cache/$pkg-$NODE_VERSION.tgz"
-    fetch_npm npm "$NPM_VERSION" "$cache/npm-$NPM_VERSION.tgz"
-    mkdir -p "$(dirname -- "$root")"
-    LITE_TMP=$(mktemp -d "$(dirname -- "$root")/.node-XXXXXX")
-    stage="$LITE_TMP/runtime"
-    mkdir -p "$stage/node" "$stage/npm" "$stage/launchers"
-    if ! tar -xzf "$cache/$pkg-$NODE_VERSION.tgz" -C "$stage/node" \
-        || ! tar -xzf "$cache/npm-$NPM_VERSION.tgz" -C "$stage/npm"; then
-        die "не удалось распаковать архивы Node.js/npm; удалите $cache и повторите" 1
-    fi
-    for f in node/package/bin/node npm/package/bin/npm-cli.js npm/package/bin/npx-cli.js; do
-        [ -f "$stage/$f" ] || die "в пакетах отсутствует $f" 1
-    done
-    chmod 755 "$stage/node/package/bin/node"
-    got_node=$("$stage/node/package/bin/node" --version 2>/dev/null || true)
-    got_npm=$("$stage/node/package/bin/node" "$stage/npm/package/bin/npm-cli.js" --version 2>/dev/null || true)
-    if [ "$got_node" != "v$NODE_VERSION" ] || [ "$got_npm" != "$NPM_VERSION" ]; then
-        die "распакованные Node.js/npm не запускаются; проверьте ОС, архитектуру и glibc" 1
-    fi
-    for cmd in npm npx; do
-        {
-            say "#!/bin/sh"
-            say "# Создано setup-lite.sh: npm использует установленный рядом Node.js."
-            say "exec '$root/node/package/bin/node' '$root/npm/package/bin/$cmd-cli.js' \"\$@\""
-        } > "$stage/launchers/$cmd"
-        chmod 755 "$stage/launchers/$cmd"
-    done
-    if [ -e "$root" ]; then mv "$root" "$LITE_TMP/previous"; fi
-    mv "$stage" "$root"
-    mkdir -p "$BIN_DIR"
-    ln -sf "$root/node/package/bin/node" "$BIN_DIR/node"
-    ln -sf "$root/launchers/npm" "$BIN_DIR/npm"
-    ln -sf "$root/launchers/npx" "$BIN_DIR/npx"
-    rm -rf "$LITE_TMP"
-    LITE_TMP=
-    say "  Node.js $NODE_VERSION, npm $NPM_VERSION: $BIN_DIR"
+    npm_conf | write_private "$NPM_CONFIG_USERCONFIG"
 }
 
-# ---- 3. агенты ----------------------------------------------------------------
+# Содержимое npmrc с токеном из TOKEN.
+npm_conf() {
+    say "# Создано setup.sh; файл перезаписывается при следующем запуске."
+    say "registry=$NPM_REG"
+    if [ -n "$TOKEN" ]; then say "//${NPM_REG#*://}:_authToken=$TOKEN"; fi
+    if [ -n "$NPM_CAFILE" ]; then say "cafile=$(expand_home "$NPM_CAFILE")"; fi
+    if [ -n "$NPM_STRICT_SSL" ]; then say "strict-ssl=$NPM_STRICT_SSL"; fi
+    for o in $NPM_OPTIONS; do say "$o"; done
+}
+
+# ---- 2. агенты ----------------------------------------------------------------
 # Git без собственных запросов пароля; вход выполняет git_login один раз на хост.
 gitq() { GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='' SSH_ASKPASS='' git "$@"; }
 
@@ -428,48 +496,34 @@ remote_rev() {
     say "$rev"
 }
 
-setup_agent() {
-    name=$1 repo=$2 ref=$3 script=${4:-setup.sh}
-    root="$DATA_DIR/harnesses/$name"
-    src="$root/src"
-    mark="$root/.setup-lite-commit"
-    say "агент $name: $repo ($ref)"
-    if [ -n "$DRY_RUN" ]; then
-        if [ ! -f "$mark" ]; then ask "Установить $name из $repo ($ref)?" "$AGENTS_EXPLICIT"; fi
-        say "  проверить ревизию $ref; обновление установленного — после подтверждения"
-        say "  \$ git clone/fetch $repo $ref → $src"
-        say "  \$ bash $script (в $src, SETUP_WORK_BACKEND=gigachat)"
-        return 0
-    fi
-    current=$(cat "$mark" 2>/dev/null || true)
-    if [ -n "$current" ] && [ -z "$CHECK_UPDATES" ]; then
-        say "  установлен ${current%"${current#????????????}"}; проверка обновлений выключена"
-        return 0
-    fi
-    if [ -z "$current" ] && ! ask "Установить $name из $repo ($ref)?" "$AGENTS_EXPLICIT"; then
-        say "  $name: пропущен"
-        return 0
-    fi
-    git_login "$repo" || return 0
-    rev=$(remote_rev "$repo" "$ref")
-    head=$(gitq -C "$src" rev-parse HEAD 2>/dev/null || true)
-    if [ -n "$current" ]; then
-        if [ "$head" = "$current" ]; then
-            case "$current" in
-                "$rev"*) say "  установленная ревизия актуальна"; return 0 ;;
-            esac
-        fi
-        say "  установлено $current, доступно $rev"
-        if ! confirm "Обновить $name и повторить $script?"; then
-            say "  оставлена установленная версия"
-            return 0
-        fi
-    fi
-    if [ -d "$src/.git" ]; then
-        if [ -n "$(gitq -C "$src" status --porcelain --untracked-files=no)" ]; then
+# Новые коммиты между установленной ревизией и ref на сервере (до 10), если их можно получить.
+show_changes() {
+    gitq -C "$src" fetch --quiet "$repo" -- "$ref" 2>/dev/null || return 0
+    n=$(gitq -C "$src" rev-list --count "$current..FETCH_HEAD" 2>/dev/null) || return 0
+    [ "$n" -gt 0 ] || return 0
+    say "  новых коммитов: $n"
+    gitq -C "$src" log --no-decorate --format='    %h %s (%an, %ad)' --date=short -n 10 \
+        "$current..FETCH_HEAD" 2>/dev/null || true
+    if [ "$n" -gt 10 ]; then say "    …"; fi
+}
+
+# Начисто: исходники, bin и метка удаляются; config с настройками агента сохраняется.
+wipe_agent() {
+    say "  переустановка $name начисто: удаляются src и bin, $root/config сохраняется"
+    rm -rf "$src" "$root/bin" "$mark"
+}
+
+# Клон/обновление до ref и запуск скрипта агента; 1 — скрипт агента завершился с ошибкой.
+install_agent() {
+    if [ -d "$src/.git" ] && [ -n "$(gitq -C "$src" status --porcelain --untracked-files=no)" ]; then
+        say "  в $src изменены файлы"
+        if ! confirm "Переустановить $name начисто? Изменения в $src будут потеряны"; then
             die "в $src есть изменения; сохраните их перед установкой $name" 2
         fi
-    else
+        wipe_agent
+    fi
+    if [ ! -d "$src/.git" ]; then
+        rm -rf "$src"
         mkdir -p "$root"
         gitq clone --no-checkout --filter=blob:none -- "$repo" "$src" \
             || die "не удалось клонировать $repo" 1
@@ -484,6 +538,7 @@ setup_agent() {
     say "  \$ bash $script"
     # setup.sh получает терминал, чтобы пройти собственную настройку.
     if [ -n "$INTERACTIVE" ]; then exec 3</dev/tty; else exec 3</dev/null; fi
+    rc=0
     ( cd "$src" && SETUP_WORK_BACKEND=gigachat \
         SETUP_WORK_HARNESS_HOME="$root" \
         SETUP_WORK_HARNESS_CONFIG="$root/config" \
@@ -491,10 +546,70 @@ setup_agent() {
         SETUP_WORK_METRICS_ENABLED=0 \
         SETUP_WORK_METRICS_AGENT="$name" \
         PATH="$root/bin:$PATH" \
-        bash "./$script" <&3 ) || die "$name: $script завершился с ошибкой; установка не отмечена успешной" 1
+        bash "./$script" <&3 ) || rc=$?
     exec 3<&-
+    [ "$rc" -eq 0 ] || return 1
     gitq -C "$src" rev-parse HEAD > "$mark"
     say "  $name установлен ($(cat "$mark"))"
+}
+
+setup_agent() {
+    name=$1 repo=$2 ref=$3 script=${4:-setup.sh}
+    root="$DATA_DIR/harnesses/$name"
+    src="$root/src"
+    mark="$root/.setup-lite-commit"
+    reinstall=
+    case " $REINSTALL " in *" $name "*) reinstall=1 ;; esac
+    say "агент $name: $repo ($ref)"
+    if [ -n "$DRY_RUN" ]; then
+        if [ ! -f "$mark" ]; then ask "Установить $name из $repo ($ref)?" "$AGENTS_EXPLICIT$reinstall"; fi
+        if [ -n "$reinstall" ]; then say "  переустановить начисто (config сохраняется)"; fi
+        say "  проверить ревизию $ref; обновление установленного — после подтверждения"
+        say "  \$ git clone/fetch $repo $ref → $src"
+        say "  \$ bash $script (в $src, SETUP_WORK_BACKEND=gigachat)"
+        return 0
+    fi
+    current=$(cat "$mark" 2>/dev/null || true)
+    # Метка есть, а рабочей копии нет или в ней другая ревизия — установка повреждена.
+    if [ -n "$current" ] && [ -z "$reinstall" ] \
+        && [ "$(gitq -C "$src" rev-parse HEAD 2>/dev/null || true)" != "$current" ]; then
+        say "  $name: установка повреждена — $src не соответствует установленной ревизии"
+        if confirm "Переустановить $name начисто?"; then
+            reinstall=1
+        else
+            say "  оставлено как есть"
+            return 0
+        fi
+    fi
+    if [ -n "$current" ] && [ -z "$CHECK_UPDATES" ] && [ -z "$reinstall" ]; then
+        say "  установлен ${current%"${current#????????????}"}; проверка обновлений выключена"
+        return 0
+    fi
+    if [ -z "$current" ] && ! ask "Установить $name из $repo ($ref)?" "$AGENTS_EXPLICIT$reinstall"; then
+        say "  $name: пропущен"
+        return 0
+    fi
+    git_login "$repo" || return 0
+    rev=$(remote_rev "$repo" "$ref")
+    if [ -n "$current" ] && [ -z "$reinstall" ]; then
+        case "$current" in
+            "$rev"*) say "  установленная ревизия актуальна"; return 0 ;;
+        esac
+        say "  на сервере новая ревизия $ref: ${current%"${current#????????????}"} → ${rev%"${rev#????????????}"}"
+        show_changes
+        if ! confirm "Обновить $name и повторить $script?"; then
+            say "  оставлена установленная версия"
+            return 0
+        fi
+    fi
+    if [ -n "$reinstall" ]; then wipe_agent; fi
+    if install_agent; then return 0; fi
+    say "  $name: $script завершился с ошибкой"
+    if [ -z "$reinstall" ] && confirm "Переустановить $name начисто и повторить $script?"; then
+        wipe_agent
+        install_agent && return 0
+    fi
+    die "$name: $script завершился с ошибкой; установка не отмечена успешной" 1
 }
 
 setup_agents() {
@@ -502,11 +617,20 @@ setup_agents() {
     if [ -z "$list" ]; then say "агенты: список AGENTS пуст, шаг пропущен"; return 0; fi
     if [ "$WITH_AGENTS" = 0 ]; then say "агенты: пропущены"; return 0; fi
     AGENTS_EXPLICIT=$WITH_AGENTS
-    if ! ask "Будете работать с агентами?" "$WITH_AGENTS"; then
+    # Уже установленные агенты — ответ «да» дан раньше; спрашивать снова незачем.
+    installed=
+    for n in $(say "$list" | awk '{ print $1 }'); do
+        if [ -f "$DATA_DIR/harnesses/$n/.setup-lite-commit" ]; then installed=1; fi
+    done
+    if [ -z "$installed$REINSTALL" ] && ! ask "Будете работать с агентами?" "$WITH_AGENTS"; then
         say "агенты: пропущены"
         return 0
     fi
     if [ -z "$SELECTED" ]; then SELECTED=$(say "$list" | awk '{ print $1 }'); fi
+    for name in $REINSTALL; do
+        say "$list" | awk -v n="$name" '$1 == n { f = 1 } END { exit !f }' \
+            || die "агент $name из --reinstall не найден в AGENTS" 6
+    done
     # Сначала проверить весь список, чтобы опечатка не оставила половину установки.
     chosen=
     for name in $SELECTED; do
@@ -535,7 +659,7 @@ setup_agents() {
     done
 }
 
-# ---- 4. локальная модель: llama.cpp, vLLM и модели -----------------------------------
+# ---- 3. локальная модель: llama.cpp, vLLM и модели -----------------------------------
 NL='
 '
 TAB=$(printf '\t')
@@ -757,26 +881,27 @@ find_shallow() {
 relink() { rm -f "$2"; ln -s "$1" "$2"; }
 
 LLAMA_READY=
+LLAMA_FLAG=
 setup_llama() {
     if [ -z "$LLAMA_CPP_URI" ]; then say "llama.cpp: LLAMA_CPP_URI не задан, шаг пропущен"; return 0; fi
     dest="$ENGINES_DIR/llama.cpp"
     if [ "$(uri_scheme "$LLAMA_CPP_URI")" = local ] && [ -d "$(local_path "$LLAMA_CPP_URI")" ]; then
-        if [ ! -L "$dest/current" ] && ! ask "Подключить llama.cpp из $LLAMA_CPP_URI?" "$LOCAL_FLAG"; then
+        if [ ! -L "$dest/current" ] && ! ask "Подключить llama.cpp из $LLAMA_CPP_URI?" "$LOCAL_FLAG$LLAMA_FLAG"; then
             say "  llama.cpp: пропущен"
             return 0
         fi
         root=$(local_path "$LLAMA_CPP_URI")
         say "  llama.cpp: используется на месте $root"
-        [ -n "$DRY_RUN" ] && return 0
+        if [ -n "$DRY_RUN" ]; then LLAMA_READY=1; return 0; fi
         mkdir -p "$dest"
     else
         if ! artifact_current "$dest" "$LLAMA_CPP_URI" zip \
-            && ! ask "Установить llama.cpp из $LLAMA_CPP_URI?" "$LOCAL_FLAG"; then
+            && ! ask "Установить llama.cpp из $LLAMA_CPP_URI?" "$LOCAL_FLAG$LLAMA_FLAG"; then
             say "  llama.cpp: пропущен"
             return 0
         fi
         install_artifact llama.cpp "$LLAMA_CPP_URI" zip "$dest"
-        [ -n "$DRY_RUN" ] && return 0
+        if [ -n "$DRY_RUN" ]; then LLAMA_READY=1; return 0; fi
         root="$dest/data"
     fi
     if [ -n "$LLAMA_CPP_PATH" ]; then
@@ -800,7 +925,7 @@ setup_llama() {
         if [ ! -f "$f" ] || [ ! -x "$f" ]; then continue; fi
         {
             say "#!/bin/sh"
-            say "# Создано setup-lite.sh: llama.cpp из $dest/current."
+            say "# Создано setup.sh: llama.cpp из $dest/current."
             if [ -n "$libs" ]; then
                 # shellcheck disable=SC2016 # раскрывается при запуске обёртки
                 say "export LD_LIBRARY_PATH=$(shq "$dest/current")"'"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
@@ -869,20 +994,21 @@ repair_venv() {
 }
 
 VLLM_READY=
+VLLM_FLAG=
 setup_vllm() {
     if [ -z "$VLLM_URI" ]; then say "vLLM: VLLM_URI не задан, шаг пропущен"; return 0; fi
     dest="$ENGINES_DIR/vllm"
     fmt=zip
     if [ "$(uri_scheme "$VLLM_URI")" = local ] && [ -d "$(local_path "$VLLM_URI")" ]; then fmt=dir; fi
     if ! artifact_current "$dest" "$VLLM_URI" "$fmt" \
-        && ! ask "Установить vLLM из $VLLM_URI?" "$LOCAL_FLAG"; then
+        && ! ask "Установить vLLM из $VLLM_URI?" "$LOCAL_FLAG$VLLM_FLAG"; then
         say "  vLLM: пропущен"
         return 0
     fi
     # Каталог копируется: исправление путей не должно менять общее venv на NFS.
     install_artifact vllm "$VLLM_URI" "$fmt" "$dest"
     fresh=$INSTALLED_FRESH
-    [ -n "$DRY_RUN" ] && return 0
+    if [ -n "$DRY_RUN" ]; then VLLM_READY=1; return 0; fi
     if [ -n "$VLLM_PATH" ]; then
         venv="$dest/data/$VLLM_PATH"
     else
@@ -896,7 +1022,7 @@ setup_vllm() {
         mkdir -p "$BIN_DIR"
         {
             say "#!/bin/sh"
-            say "# Создано setup-lite.sh: vLLM из $dest/current."
+            say "# Создано setup.sh: vLLM из $dest/current."
             say "exec $(shq "$dest/current/bin/vllm") \"\$@\""
         } > "$BIN_DIR/vllm"
         chmod 755 "$BIN_DIR/vllm"
@@ -930,6 +1056,25 @@ model_format() {
     esac
 }
 
+# Движок модели до загрузки: «gguf» в имени, пути или локальном каталоге — llama.cpp.
+model_engine() {
+    case "$1 $2" in *[gG][gG][uU][fF]*) say llama.cpp; return 0 ;; esac
+    if [ "$(uri_scheme "$2")" = local ] && [ -d "$(local_path "$2")" ] \
+        && [ -n "$(find "$(local_path "$2")/" -name '*.gguf' 2>/dev/null | head -n 1)" ]; then
+        say llama.cpp
+        return 0
+    fi
+    say vllm
+}
+
+# Движок доступен: установлен в этом запуске или уже есть в PATH.
+engine_ready() {
+    case "$1" in
+        llama.cpp) [ -n "$LLAMA_READY" ] || command -v llama-server >/dev/null 2>&1 ;;
+        *) [ -n "$VLLM_READY" ] || command -v vllm >/dev/null 2>&1 ;;
+    esac
+}
+
 # Точка входа модели: GGUF-файл (кроме mmproj) или каталог с config.json.
 model_entry() {
     if [ -f "$1" ]; then say "$1"; return 0; fi
@@ -941,13 +1086,15 @@ model_entry() {
     say "$1"
 }
 
-MODEL_HINTS=
+# Установленные модели с готовым движком: имя<TAB>движок<TAB>путь, по строке на модель.
+SERVE_LIST=
 setup_model() {
     m_name=$1 m_uri=$2
     m_fmt=$(model_format "$m_uri" "${3:-}")
+    m_engine=$(model_engine "$m_name" "$m_uri")
     dest="$MODELS_DIR/$m_name"
     m_explicit=$LOCAL_FLAG
-    case " $SELECTED_MODELS " in *" $m_name "*) m_explicit=1 ;; esac
+    case " $SELECTED_MODELS $SERVE " in *" $m_name "*) m_explicit=1 ;; esac
     if [ "$(uri_scheme "$m_uri")" = local ] && { [ "$m_fmt" = file ] || [ "$m_fmt" = dir ]; }; then
         root=$(local_path "$m_uri")
         [ -e "$root" ] || die "модель $m_name: не найден $root" 6
@@ -956,7 +1103,7 @@ setup_model() {
             return 0
         fi
         say "  $m_name: используется на месте $root"
-        [ -n "$DRY_RUN" ] && return 0
+        if [ -n "$DRY_RUN" ]; then serve_add "$m_name" "$m_engine" "$dest/model"; return 0; fi
         mkdir -p "$dest"
     else
         if ! artifact_current "$dest" "$m_uri" "$m_fmt" \
@@ -965,22 +1112,94 @@ setup_model() {
             return 0
         fi
         install_artifact "$m_name" "$m_uri" "$m_fmt" "$dest"
-        [ -n "$DRY_RUN" ] && return 0
+        if [ -n "$DRY_RUN" ]; then serve_add "$m_name" "$m_engine" "$dest/model"; return 0; fi
         root="$dest/data"
     fi
     entry=$(model_entry "$root")
     relink "$entry" "$dest/model"
     say "  $m_name: $dest/model → $entry"
-    case "$entry" in
-        *.gguf|*.GGUF)
-            if [ -n "$LLAMA_READY" ]; then
-                MODEL_HINTS="${MODEL_HINTS}  llama-server -m $(shq "$dest/model") --host 127.0.0.1 --port 8000$NL"
-            fi ;;
-        *)
-            if [ -n "$VLLM_READY" ]; then
-                MODEL_HINTS="${MODEL_HINTS}  vllm serve $(shq "$dest/model") --host 127.0.0.1 --port 8000$NL"
-            fi ;;
-    esac
+    # После загрузки движок точно известен по точке входа.
+    case "$entry" in *.gguf|*.GGUF) m_engine=llama.cpp ;; *) m_engine=vllm ;; esac
+    serve_add "$m_name" "$m_engine" "$dest/model"
+}
+
+serve_add() {
+    if engine_ready "$2"; then SERVE_LIST="$SERVE_LIST$1$TAB$2$TAB$3$NL"; fi
+}
+
+# Команда запуска для ручного старта — путь в кавычках, чтобы её можно было скопировать.
+serve_hint() {
+    if [ "$2" = llama.cpp ]; then
+        say "llama-server -m $(shq "$3") --alias $1 --host $SERVE_HOST --port $SERVE_PORT"
+    else
+        say "vllm serve $(shq "$3") --served-model-name $1 --host $SERVE_HOST --port $SERVE_PORT"
+    fi
+}
+
+SERVER_DIR="$RUNTIME_DIR/server"
+start_server() {
+    s_name=$1 s_engine=$2 s_model=$3
+    if [ "$s_engine" = llama.cpp ]; then
+        set -- llama-server -m "$s_model" --alias "$s_name" --host "$SERVE_HOST" --port "$SERVE_PORT"
+    else
+        set -- vllm serve "$s_model" --served-model-name "$s_name" \
+            --host "$SERVE_HOST" --port "$SERVE_PORT"
+    fi
+    s_log="$SERVER_DIR/$s_name.log"
+    say "  \$ $* > $s_log"
+    [ -n "$DRY_RUN" ] && return 0
+    mkdir -p "$SERVER_DIR"
+    nohup "$@" > "$s_log" 2>&1 < /dev/null &
+    s_pid=$!
+    say "$s_pid $s_name" > "$SERVER_DIR/server.pid"
+    # Ошибка аргументов, занятый порт или нехватка памяти обычно видны в первые секунды.
+    sleep 3
+    if ! kill -0 "$s_pid" 2>/dev/null; then
+        rm -f "$SERVER_DIR/server.pid"
+        tail -n 20 "$s_log" >&2 || true
+        die "$s_name: сервер завершился сразу после запуска; лог: $s_log" 1
+    fi
+    say "  $s_name запущен (PID $s_pid): http://$SERVE_HOST:$SERVE_PORT/v1, модель «$s_name»"
+    say "  загрузка весов может занять несколько минут; лог: $s_log; остановить: kill $s_pid"
+}
+
+serve_local() {
+    if [ -n "$SERVE" ]; then
+        case "$SERVE_LIST" in
+            "$SERVE$TAB"*|*"$NL$SERVE$TAB"*) ;;
+            *) die "модель $SERVE не запущена: не установлен её движок или она пропущена" 4 ;;
+        esac
+    fi
+    [ -n "$SERVE_LIST" ] || return 0
+    if [ -z "$DRY_RUN" ] && [ -f "$SERVER_DIR/server.pid" ] \
+        && read -r r_pid r_name < "$SERVER_DIR/server.pid" && kill -0 "$r_pid" 2>/dev/null; then
+        say "Сервер уже запущен: $r_name (PID $r_pid); остановить: kill $r_pid"
+        WITH_SERVE=0
+    fi
+    started=
+    o_ifs=$IFS
+    set -f
+    IFS=$NL
+    for e in $SERVE_LIST; do
+        IFS=$o_ifs
+        s_name=${e%%"$TAB"*}
+        rest=${e#*"$TAB"}
+        s_engine=${rest%%"$TAB"*}
+        s_model=${rest#*"$TAB"}
+        if [ "$WITH_SERVE" != 0 ] && [ -z "$started" ] && { [ -z "$SERVE" ] || [ "$SERVE" = "$s_name" ]; } \
+            && ask "Запустить модель $s_name через $s_engine на $SERVE_HOST:$SERVE_PORT?" "$SERVE"; then
+            start_server "$s_name" "$s_engine" "$s_model"
+            started=1
+        fi
+        IFS=$NL
+    done
+    IFS=$o_ifs
+    set +f
+    [ -z "$started" ] || return 0
+    say "Запуск OpenAI-совместимого API (в отдельном терминале после . env.sh):"
+    say "$SERVE_LIST" | while IFS=$TAB read -r s_name s_engine s_model; do
+        if [ -n "$s_name" ]; then say "  $(serve_hint "$s_name" "$s_engine" "$s_model")"; fi
+    done
 }
 
 has_gpu() { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; }
@@ -1003,6 +1222,7 @@ setup_local() {
         case "$v" in *CHANGE-ME*) die "заполните LLAMA_CPP_URI и VLLM_URI в блоке НАСТРОЙКИ или оставьте ненужный пустым" 2 ;; esac
     done
     names=${SELECTED_MODELS:-$(say "$models" | awk '{ print $1 }')}
+    if [ -n "$SELECTED_MODELS" ] && [ -n "$SERVE" ]; then names="$names $SERVE"; fi
     chosen=
     # Сначала проверить весь список, чтобы опечатка не оставила половину загрузок.
     for name in $names; do
@@ -1022,21 +1242,51 @@ setup_local() {
         esac
         case " $chosen " in *" $name "*) ;; *) chosen="$chosen $name" ;; esac
     done
+    if [ -n "$SERVE" ]; then
+        case " $chosen " in *" $SERVE "*) ;; *) die "модель $SERVE (--serve) не найдена в MODELS" 6 ;; esac
+        # --serve=имя подтверждает и установку движка этой модели.
+        line=$(say "$models" | awk -v n="$SERVE" '$1 == n { print; exit }')
+        set -f
+        # shellcheck disable=SC2086 # строка намеренно разбивается на поля
+        set -- $line
+        set +f
+        if [ "$(model_engine "$1" "$2")" = llama.cpp ]; then LLAMA_FLAG=1; else VLLM_FLAG=1; fi
+    fi
     say "  движки: $ENGINES_DIR; модели: $MODELS_DIR"
     setup_llama
     setup_vllm
+    # Предлагать только модели, которые сможет запустить установленный движок.
+    fit=
+    fit_ok=
     for name in $chosen; do
         line=$(say "$models" | awk -v n="$name" '$1 == n { print; exit }')
         set -f
-        # shellcheck disable=SC2086 # поля строки; glob внутри функции нужен
+        # shellcheck disable=SC2086 # строка намеренно разбивается на поля
+        set -- $line
+        set +f
+        engine=$(model_engine "$1" "$2")
+        if engine_ready "$engine"; then
+            fit="$fit $name"
+            fit_ok="$fit_ok $name ($engine)"
+        else
+            case " $SELECTED_MODELS $SERVE " in
+                *" $name "*)
+                    say "  $name: движок $engine не установлен — модель загружается по --models"
+                    fit="$fit $name" ;;
+                *) say "  $name: пропущена — нужен $engine, а он не установлен (загрузить всё равно: --models=$name)" ;;
+            esac
+        fi
+    done
+    if [ -n "$fit_ok" ]; then say "  рекомендуемые модели для установленных движков:$fit_ok"; fi
+    for name in $fit; do
+        line=$(say "$models" | awk -v n="$name" '$1 == n { print; exit }')
+        set -f
+        # shellcheck disable=SC2086 # строка намеренно разбивается на поля
         set -- $line
         set +f
         setup_model "$@"
     done
-    if [ -n "$MODEL_HINTS" ]; then
-        say "Запуск OpenAI-совместимого API (в отдельном терминале после . env.sh):"
-        printf '%s' "$MODEL_HINTS"
-    fi
+    serve_local
 }
 
 # ---- env.sh для новых терминалов ------------------------------------------------
@@ -1047,7 +1297,7 @@ write_env() {
     [ -n "$DRY_RUN" ] && return 0
     mkdir -p "$SW_HOME"
     {
-        say "# Создано setup-lite.sh. Подключайте этот файл в каждом новом терминале."
+        say "# Создано setup.sh. Подключайте этот файл в каждом новом терминале."
         say "export SETUP_WORK_HOME=$(shq "$SW_HOME")"
         say "export PIP_CONFIG_FILE=$(shq "$PIP_CONFIG_FILE")"
         say "export NPM_CONFIG_USERCONFIG=$(shq "$NPM_CONFIG_USERCONFIG")"
@@ -1073,14 +1323,13 @@ unset sw_agent_bin'
 
 # ---- выполнение -------------------------------------------------------------------
 if [ -n "$DRY_RUN" ]; then say "(dry-run) изменения не выполняются"; fi
-say "1/4 Корпоративные реестры"
+say "основной каталог: $SW_HOME"
+say "1/3 Корпоративные реестры"
 setup_pypi
 setup_npm
-say "2/4 Node.js и npm"
-install_node
-say "3/4 Агенты"
+say "2/3 Агенты"
 setup_agents
-say "4/4 Локальная модель"
+say "3/3 Локальная модель"
 setup_local
 write_env
-say "готово. В новом терминале: . $(shq "$SW_HOME/env.sh")"
+say "готово. Запусти в рабочем терминале sourc ~/.bashrc"

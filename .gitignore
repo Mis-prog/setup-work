@@ -12,3 +12,11 @@ dist/
 *.key
 .DS_Store
 *.HEIC
+# Создаётся scripts/setup.sh, когда основной каталог — каталог скрипта.
+/scripts/bin/
+/scripts/cache/
+/scripts/data/
+/scripts/registries/
+/scripts/env.sh
+/scripts/env.sh.tmp
+/scripts/gitconfig

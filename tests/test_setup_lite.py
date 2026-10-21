@@ -9,21 +9,28 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/setup-lite.sh"
+SCRIPT = ROOT / "scripts/setup.sh"
 SHELLS = [s for s in ("sh", "dash") if shutil.which(s)]
 
 
 def configure(tmp_path: Path, agents: str = "", models: str = "", **settings: str) -> Path:
     """Копия скрипта с заполненным блоком НАСТРОЙКИ — так его использует сотрудник."""
     text = SCRIPT.read_text()
-    defaults = {"PYPI_INDEX": "", "NPM_REGISTRY": "", "LLAMA_CPP_URI": "", "VLLM_URI": ""}
+    defaults = {
+        "PYPI_INDEX": "",
+        "NPM_REGISTRY": "",
+        "LLAMA_CPP_URI": "",
+        "VLLM_URI": "",
+        "SERVE_HOST": "127.0.0.1",
+        "SERVE_PORT": "8000",
+    }
     for key, value in {**defaults, **settings}.items():
         text, n = re.subn(rf"^{key}=.*$", f"{key}='{value}'", text, count=1, flags=re.M)
         assert n == 1, key
     for key, value in (("AGENTS", agents), ("MODELS", models)):
         text, n = re.subn(rf"^{key}='.*?'$", f"{key}='\n{value}\n'", text, flags=re.M | re.S)
         assert n == 1, key
-    script = tmp_path / "setup-lite.sh"
+    script = tmp_path / "setup.sh"
     script.write_text(text)
     return script
 
@@ -74,6 +81,32 @@ def test_placeholders_stop_before_any_change(tmp_path, shell):
     assert result.returncode == 2
     assert "PYPI_INDEX" in result.stderr and "CHANGE-ME" in result.stderr
     assert not (tmp_path / "sw").exists()
+    # Пропущенные флагами шаги заготовки не проверяют: можно пробовать по частям.
+    skipped = run(
+        SCRIPT, tmp_path, "--dry-run", "--no-registries", "--no-agents", "--no-local", shell=shell
+    )
+    assert skipped.returncode == 0, skipped.stderr
+
+
+def test_home_defaults_to_script_directory(tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    script = configure(workdir)
+    (tmp_path / "elsewhere").mkdir()
+    result = subprocess.run(
+        ["sh", str(script), "--no-agents", "--no-local"],
+        cwd=tmp_path / "elsewhere",
+        env={"HOME": str(tmp_path / "home"), "PATH": os.environ["PATH"], "TMPDIR": str(tmp_path)},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    home = workdir.resolve()
+    assert f"основной каталог: {home}" in result.stdout
+    assert f"export SETUP_WORK_HOME='{home}'" in (workdir / "env.sh").read_text()
+    assert not (tmp_path / "elsewhere/env.sh").exists()
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -93,10 +126,8 @@ def test_dry_run_plans_everything_without_writing(tmp_path, shell):
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "https://npm.corp.invalid/repository/npm/" in out
-    assert "npm@12.2.0" in out
     assert "(dry-run) вопрос: Будете работать с агентами?" in out
     assert "(dry-run) вопрос: Установить qwen-code" in out
-    assert "(dry-run) вопрос: Установить Node.js 24.20.0" in out
     assert "qwen-code" in out
     assert "NPM_SECRET" not in out + result.stderr
     assert not (tmp_path / "sw").exists()
@@ -114,11 +145,11 @@ def test_registries_are_private_and_token_is_encoded(tmp_path):
         NPM_REGISTRY="https://npm.corp.invalid/npm/",
         NPM_AUTH_FILE=str(tokens / "npm"),
     )
-    declined = run(script, tmp_path, "--no-node", "--no-agents")
+    declined = run(script, tmp_path, "--no-agents")
     assert declined.returncode == 0, declined.stderr
     assert "ответ «нет»" in declined.stdout
     assert not (tmp_path / "sw/registries").exists()
-    result = run(script, tmp_path, "--no-node", "--no-agents", "--yes")
+    result = run(script, tmp_path, "--no-agents", "--yes")
     assert result.returncode == 0, result.stderr
     assert "NPM_SECRET" not in result.stdout + result.stderr
     pip_conf = tmp_path / "sw/registries/pip.conf"
@@ -131,6 +162,38 @@ def test_registries_are_private_and_token_is_encoded(tmp_path):
     for path in (pip_conf, npmrc):
         assert path.stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "sw/env.sh").is_file()
+
+    # Настроено — повторно не спрашивается; новый токен — снова вопрос.
+    again = run(script, tmp_path, "--no-agents")
+    assert "PyPI: уже настроен" in again.stdout and "npm: уже настроен" in again.stdout
+    assert "вопрос" not in again.stdout
+    (tokens / "npm").write_text("NEW_SECRET\n")
+    rotated = run(script, tmp_path, "--no-agents")
+    assert "PyPI: уже настроен" in rotated.stdout
+    assert 'вопрос без терминала: "Записать корпоративный npm' in rotated.stdout
+
+
+def test_registries_configured_by_corporate_scripts_are_kept(tmp_path):
+    home = tmp_path / "home"
+    (home / ".config/pip").mkdir(parents=True)
+    (home / ".config/pip/pip.conf").write_text(
+        "[global]\nindex-url = https://u:p@pypi.corp.invalid/simple/\n"
+    )
+    (home / ".npmrc").write_text("registry=https://npm.corp.invalid/npm\n")
+    script = configure(
+        tmp_path,
+        PYPI_INDEX="https://pypi.corp.invalid/simple",
+        PYPI_AUTH_FILE="",
+        NPM_REGISTRY="https://npm.corp.invalid/npm/",
+        NPM_AUTH_FILE="",
+    )
+    result = run(script, tmp_path, "--no-agents")
+    assert result.returncode == 0, result.stderr
+    assert f"PyPI: уже настроен в {home}/.config/pip/pip.conf" in result.stdout
+    assert f"npm: уже настроен в {home}/.npmrc" in result.stdout
+    assert not (tmp_path / "sw/registries").exists()
+    # npm в новых терминалах продолжает читать ~/.npmrc.
+    assert f"NPM_CONFIG_USERCONFIG='{home}/.npmrc'" in (tmp_path / "sw/env.sh").read_text()
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="нужен git")
@@ -151,6 +214,8 @@ def test_agent_install_reuse_and_update(tmp_path):
     commit(repo, "v2")
     declined = run(script, tmp_path, "--agents=demo")
     assert declined.returncode == 0, declined.stderr
+    assert "на сервере новая ревизия main" in declined.stdout
+    assert "новых коммитов: 1" in declined.stdout and " v2 (t, " in declined.stdout
     assert "оставлена установленная версия" in declined.stdout
     assert len(runs.read_text().splitlines()) == 1
 
@@ -165,6 +230,43 @@ def test_agent_install_reuse_and_update(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="нужен git")
+def test_broken_agent_can_be_reinstalled(tmp_path):
+    repo = make_repo(tmp_path)
+    script = configure(tmp_path, agents=f"demo {repo} main")
+    root = tmp_path / "sw/data/harnesses/demo"
+    runs = root / "config/runs"
+    assert run(script, tmp_path, "--agents=demo").returncode == 0
+    (root / "config/settings.json").write_text("{}")
+
+    # Исходники пропали: без терминала — оставить как есть, с --yes — переустановить.
+    shutil.rmtree(root / "src")
+    kept = run(script, tmp_path, "--agents=demo")
+    assert kept.returncode == 0, kept.stderr
+    assert "установка повреждена" in kept.stdout and "оставлено как есть" in kept.stdout
+    fixed = run(script, tmp_path, "--agents=demo", "--yes")
+    assert fixed.returncode == 0, fixed.stdout + fixed.stderr
+    assert "переустановка demo начисто" in fixed.stdout
+    assert (root / "src/setup.sh").is_file()
+    assert (root / "config/settings.json").is_file()  # настройки агента сохраняются
+    assert len(runs.read_text().splitlines()) == 2
+
+    # Явная переустановка без поломки и вопросов.
+    forced = run(script, tmp_path, "--reinstall=demo")
+    assert forced.returncode == 0, forced.stdout + forced.stderr
+    assert "переустановка demo начисто" in forced.stdout
+    assert len(runs.read_text().splitlines()) == 3
+    assert run(script, tmp_path, "--reinstall=typo").returncode == 6
+
+    # Изменённые файлы мешают обновлению — предлагается переустановка.
+    (root / "src/setup.sh").write_text((root / "src/setup.sh").read_text() + "# local\n")
+    commit(repo, "v2")
+    blocked = run(script, tmp_path, "--agents=demo", "--yes")
+    assert blocked.returncode == 0, blocked.stdout + blocked.stderr
+    assert "изменены файлы" in blocked.stdout and "переустановка demo начисто" in blocked.stdout
+    assert "# local" not in (root / "src/setup.sh").read_text()
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="нужен git")
 def test_failed_setup_is_not_marked_installed(tmp_path):
     repo = make_repo(tmp_path)
     (repo / "setup.sh").write_text("exit 3\n")
@@ -174,6 +276,10 @@ def test_failed_setup_is_not_marked_installed(tmp_path):
     assert result.returncode == 1
     assert "завершился с ошибкой" in result.stderr
     assert not (tmp_path / "sw/data/harnesses/demo/.setup-lite-commit").exists()
+    # С согласием — одна попытка начисто, затем ошибка.
+    retried = run(script, tmp_path, "--agents=demo", "--yes")
+    assert retried.returncode == 1
+    assert "переустановка demo начисто" in retried.stdout
 
 
 def test_unknown_agent_rejected_before_install(tmp_path):
@@ -182,46 +288,6 @@ def test_unknown_agent_rejected_before_install(tmp_path):
     assert result.returncode == 6
     assert "typo" in result.stderr
     assert not (tmp_path / "sw/data/harnesses").exists()
-
-
-def _npm_package(path: Path, files: dict[str, str]) -> None:
-    import tarfile
-
-    staging = path.with_suffix(".d")
-    for name, body in files.items():
-        target = staging / "package" / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body)
-        target.chmod(0o755)
-    with tarfile.open(path, "w:gz") as tar:
-        tar.add(staging / "package", arcname="package")
-
-
-def test_node_installed_from_cached_registry_packages(tmp_path):
-    """Архивы уже в кеше загрузок: сеть не нужна, проверяются распаковка и ссылки."""
-    machine = os.uname()
-    system = {"Darwin": "darwin", "Linux": "linux"}[machine.sysname]
-    arch = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}[machine.machine]
-    package = (
-        "node-bin-darwin-arm64" if f"{system}-{arch}" == "darwin-arm64" else f"node-{system}-{arch}"
-    )
-    cache = tmp_path / "sw/data/tools/downloads/npm"
-    cache.mkdir(parents=True)
-    node = (
-        "#!/bin/sh\n"
-        'if [ "$1" = --version ]; then echo v24.20.0; exit; fi\n'
-        'case "$1" in *npm-cli.js|*npx-cli.js) [ "$2" = --version ] && echo 12.2.0 ;; esac\n'
-    )
-    _npm_package(cache / f"{package}-24.20.0.tgz", {"bin/node": node})
-    _npm_package(cache / "npm-12.2.0.tgz", {"bin/npm-cli.js": "", "bin/npx-cli.js": ""})
-    script = configure(tmp_path, NPM_REGISTRY="https://npm.corp.invalid/npm/", NPM_AUTH_FILE="")
-    result = run(script, tmp_path, "--no-agents", "--yes")
-    assert result.returncode == 0, result.stdout + result.stderr
-    bin_dir = tmp_path / "sw/bin"
-    npm = subprocess.run([str(bin_dir / "npm"), "--version"], capture_output=True, text=True)
-    assert npm.stdout.strip() == "12.2.0"
-    again = run(script, tmp_path, "--no-agents")
-    assert "уже установлены" in again.stdout  # без вопроса
 
 
 def _zip(path: Path, files: dict[str, str | bytes], *, links: dict[str, str] | None = None) -> None:
@@ -272,13 +338,65 @@ def test_llama_and_models_from_local_sources(tmp_path):
     assert f"LD={runtime}/engines/llama.cpp/current" in llama.stderr
     models = runtime / "models"
     assert (models / "q4/model").resolve() == gguf.resolve()  # на месте, без копии
+    assert "рекомендуемые модели для установленных движков: q4 (llama.cpp)" in result.stdout
+    assert "hf: пропущена — нужен vllm" in result.stdout  # vLLM нет — модель HF не предлагается
+    assert not (models / "hf").exists()
+    assert "llama-server -m" in result.stdout and "--alias q4" in result.stdout
+    assert "Запуск OpenAI-совместимого API" in result.stdout  # без терминала запуск — «нет»
+    assert not (runtime / "server/server.pid").exists()
+
+    forced = run(script, tmp_path, "--no-agents", "--models=hf")
+    assert forced.returncode == 0, forced.stdout + forced.stderr
     assert (models / "hf/model/config.json").is_file()
     assert (models / "hf/model/model.safetensors").is_file()
-    assert "llama-server -m" in result.stdout
+    assert "vllm serve" not in forced.stdout  # движка нет — команду запуска не предлагать
 
     again = run(script, tmp_path, "--no-agents", "--local")
     assert again.returncode == 0, again.stderr
-    assert again.stdout.count("уже установлен") == 2
+    assert again.stdout.count("уже установлен") == 1  # llama.cpp; q4 подключена на месте
+
+
+FAKE_SERVER = (
+    "#!/bin/sh\n"
+    'if [ "$1" = --version ]; then echo "version: 1 (fake)"; exit 0; fi\n'
+    'echo "args: $*"\n'
+    "exec sleep 60\n"
+)
+
+
+def test_model_served_after_install(tmp_path):
+    llama = tmp_path / "nfs/llama/bin/llama-server"
+    llama.parent.mkdir(parents=True)
+    llama.write_text(FAKE_SERVER)
+    llama.chmod(0o755)
+    gguf = tmp_path / "nfs/m.gguf"
+    gguf.write_text("gguf")
+    script = configure(
+        tmp_path,
+        models=f"m {gguf}\nhf {tmp_path}/nfs/hf/ zip-parts",
+        LLAMA_CPP_URI=str(tmp_path / "nfs/llama"),
+    )
+    dry = run(script, tmp_path, "--no-agents", "--local", "--dry-run", "--models=m")
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "(dry-run) вопрос: Запустить модель m через llama.cpp на 127.0.0.1:8000?" in dry.stdout
+
+    unknown = run(script, tmp_path, "--no-agents", "--serve=typo")
+    assert unknown.returncode == 6
+    assert "typo" in unknown.stderr
+
+    result = run(script, tmp_path, "--no-agents", "--serve=m")
+    assert result.returncode == 0, result.stdout + result.stderr
+    server = Path(f"{tmp_path}/tmp/setup-work-{os.getuid()}/server")
+    pid, name = (server / "server.pid").read_text().split()
+    try:
+        assert name == "m"
+        assert "m запущен" in result.stdout
+        log = (server / "m.log").read_text()
+        assert "--alias m --host 127.0.0.1 --port 8000" in log
+        again = run(script, tmp_path, "--no-agents", "--local")
+        assert "Сервер уже запущен: m" in again.stdout
+    finally:
+        os.kill(int(pid), 15)
 
 
 @pytest.mark.skipif(not shutil.which("unzip"), reason="нужен unzip")
@@ -321,7 +439,7 @@ def test_incomplete_zip_parts_rejected(tmp_path):
     _zip(parts / "M-1-of-3.zip", {"a": "1"})
     _zip(parts / "M-3-of-3.zip", {"c": "3"})
     script = configure(tmp_path, models=f"m {parts}")
-    result = run(script, tmp_path, "--no-agents", "--local")
+    result = run(script, tmp_path, "--no-agents", "--models=m")
     assert result.returncode == 2
     assert "отсутствуют части: 2 из 3" in result.stderr
 
@@ -382,7 +500,7 @@ def test_local_stage_skipped_without_gpu_unless_forced(tmp_path):
     result = run(script, tmp_path, "--no-agents")
     assert result.returncode == 0, result.stderr
     assert "GPU нет" in result.stdout or "Обнаружены GPU" in result.stdout
-    dry = run(script, tmp_path, "--no-agents", "--local", "--dry-run")
+    dry = run(script, tmp_path, "--no-agents", "--models=m", "--dry-run")
     assert dry.returncode == 6
     assert "/nonexistent/model.gguf" in dry.stderr
 
@@ -451,7 +569,7 @@ def test_every_step_can_be_declined_in_terminal(tmp_path):
         models=f"m {gguf}",
         LLAMA_CPP_URI=str(tmp_path / "nfs/llama"),
     )
-    answers = ["y", "n", "y", "y", "n", "y"]  # агенты, skipme, keepme, GPU, llama.cpp, модель
+    answers = ["y", "n", "y", "y", "n"]  # агенты, skipme, keepme, GPU, llama.cpp
     code, out = run_tty(script, tmp_path, answers, path=str(fake))
     assert code == 0, out
     for question in (
@@ -460,24 +578,79 @@ def test_every_step_can_be_declined_in_terminal(tmp_path):
         "Установить keepme из",
         "Обнаружены GPU. Установить движки и модели? [y/N]",
         "Подключить llama.cpp из",
-        "Подключить модель m на месте",
     ):
         assert question in out
     harnesses = tmp_path / "sw/data/harnesses"
     assert not (harnesses / "skipme").exists()
     assert (harnesses / "keepme/.setup-lite-commit").is_file()
     assert not (tmp_path / "sw/bin/llama-server").exists()
-    models = Path(f"{tmp_path}/tmp/setup-work-{os.getuid()}/models")
-    assert (models / "m/model").resolve() == gguf.resolve()
-    assert "llama-server -m" not in out  # движок не подключён — команду запуска не предлагать
+    assert "m: пропущена — нужен llama.cpp" in out  # движок не подключён — GGUF не предлагать
+    assert "Подключить модель m" not in out
+    assert "llama-server -m" not in out
 
     # Повторно: про установленное не спрашивается, отказанное предлагается снова.
-    # агенты, skipme, GPU, llama.cpp (снова предлагается); keepme и модель уже установлены
-    code, out = run_tty(script, tmp_path, ["y", "n", "y", "n"], path=str(fake))
+    # skipme, GPU, llama.cpp (снова предлагается), модель, запуск; keepme установлен — про
+    # агентов в целом не спрашивается
+    code, out = run_tty(script, tmp_path, ["n", "y", "y", "y", "n"], path=str(fake))
     assert code == 0, out
+    assert "Будете работать с агентами?" not in out
     assert "Установить skipme из" in out
     assert "Установить keepme из" not in out
     assert "keepme" in out and "актуальна" in out
     assert "Подключить llama.cpp из" in out
-    assert "Подключить модель m" not in out
-    assert "m: " in out and "→" in out
+    assert "Подключить модель m на месте" in out
+    assert "Запустить модель m через llama.cpp на 127.0.0.1:8000? [y/N]" in out
+    models = Path(f"{tmp_path}/tmp/setup-work-{os.getuid()}/models")
+    assert (models / "m/model").resolve() == gguf.resolve()
+    assert "llama-server -m" in out  # отказ от запуска — показать команду для ручного старта
+
+
+@pytest.fixture
+def pypi_server():
+    """PyPI, который пускает только с токеном GOOD-TOKEN (Basic token:GOOD-TOKEN)."""
+    import base64
+    import http.server
+    import threading
+
+    good = "Basic " + base64.b64encode(b"token:GOOD-TOKEN").decode()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.headers.get("Authorization") == good else 401)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}/simple"
+    server.shutdown()
+
+
+def test_missing_token_is_asked_checked_and_saved(tmp_path, pypi_server):
+    token = tmp_path / "tokens/pypi.txt"
+    script = configure(tmp_path, PYPI_INDEX=pypi_server, PYPI_AUTH_FILE=str(token))
+    # Без терминала спросить нельзя — понятная ошибка до изменений.
+    result = run(script, tmp_path, "--no-agents", "--no-local", "--yes")
+    assert result.returncode == 6
+    assert "токен будет запрошен" in result.stderr
+
+    # PyPI?, неверный токен, верный токен
+    code, out = run_tty(script, tmp_path, ["y", "WRONG", "GOOD-TOKEN"], "--no-agents", "--no-local")
+    assert code == 0, out
+    assert "файл токена" in out and "не найден" in out
+    assert "реестр отклонил токен (HTTP 401)" in out
+    assert "токен действителен" in out
+    assert token.read_text().strip() == "GOOD-TOKEN"
+    assert token.stat().st_mode & 0o777 == 0o600
+    assert "token:GOOD-TOKEN@127.0.0.1" in (tmp_path / "sw/registries/pip.conf").read_text()
+
+    # Сохранённый токен проверяется без вопросов; отклонённый без терминала — предупреждение.
+    again = run(script, tmp_path, "--no-agents", "--no-local")
+    assert again.returncode == 0, again.stderr
+    assert "PyPI: уже настроен" in again.stdout and "вопрос" not in again.stdout
+    token.write_text("STALE\n")
+    stale = run(script, tmp_path, "--no-agents", "--no-local", "--yes")
+    assert stale.returncode == 0, stale.stderr
+    assert "реестр отклонил токен" in stale.stdout and "замените токен" in stale.stdout
