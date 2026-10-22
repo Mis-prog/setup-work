@@ -209,7 +209,9 @@ def test_agent_install_reuse_and_update(tmp_path):
     again = run(script, tmp_path, "--agents=demo")
     assert again.returncode == 0, again.stderr
     assert "актуальна" in again.stdout
-    assert len(runs.read_text().splitlines()) == 1
+    # setup.sh установленного агента выполняется при каждом запуске.
+    assert "повторный запуск setup.sh" in again.stdout
+    assert len(runs.read_text().splitlines()) == 2
 
     commit(repo, "v2")
     declined = run(script, tmp_path, "--agents=demo")
@@ -217,11 +219,15 @@ def test_agent_install_reuse_and_update(tmp_path):
     assert "на сервере новая ревизия main" in declined.stdout
     assert "новых коммитов: 1" in declined.stdout and " v2 (t, " in declined.stdout
     assert "оставлена установленная версия" in declined.stdout
-    assert len(runs.read_text().splitlines()) == 1
+    assert len(runs.read_text().splitlines()) == 3
+
+    offline = run(script, tmp_path, "--agents=demo", "--no-updates")
+    assert offline.returncode == 0, offline.stderr
+    assert len(runs.read_text().splitlines()) == 4
 
     updated = run(script, tmp_path, "--agents=demo", "--yes")
     assert updated.returncode == 0, updated.stderr
-    assert len(runs.read_text().splitlines()) == 2
+    assert len(runs.read_text().splitlines()) == 5
     head = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
     ).stdout.strip()
@@ -280,6 +286,20 @@ def test_failed_setup_is_not_marked_installed(tmp_path):
     retried = run(script, tmp_path, "--agents=demo", "--yes")
     assert retried.returncode == 1
     assert "переустановка demo начисто" in retried.stdout
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="нужен git")
+def test_failed_rerun_of_installed_agent_is_reported(tmp_path):
+    repo = make_repo(tmp_path)
+    script = configure(tmp_path, agents=f"demo {repo} main")
+    assert run(script, tmp_path, "--agents=demo").returncode == 0
+    marker = tmp_path / "sw/data/harnesses/demo/.setup-lite-commit"
+    src = tmp_path / "sw/data/harnesses/demo/src/setup.sh"
+    src.write_text("exit 3\n")
+    result = run(script, tmp_path, "--agents=demo")
+    assert result.returncode == 1
+    assert "demo: setup.sh завершился с ошибкой" in result.stderr
+    assert marker.is_file()  # установленная ревизия остаётся отмеченной
 
 
 def test_unknown_agent_rejected_before_install(tmp_path):
@@ -356,29 +376,92 @@ def test_llama_and_models_from_local_sources(tmp_path):
     assert again.stdout.count("уже установлен") == 1  # llama.cpp; q4 подключена на месте
 
 
-FAKE_SERVER = (
-    "#!/bin/sh\n"
-    'if [ "$1" = --version ]; then echo "version: 1 (fake)"; exit 0; fi\n'
-    'echo "args: $*"\n'
-    "exec sleep 60\n"
-)
+def fake_server(path: Path, mode: str = "ready") -> None:
+    """llama-server: --version; иначе /health отвечает 200 через секунду (ready),
+    процесс падает (crash) или так и не начинает отвечать (hang)."""
+    import sys
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"#!{sys.executable}\n"
+        "import http.server, sys, time\n"
+        "if sys.argv[1:] == ['--version']:\n"
+        "    print('version: 1 (fake)'); sys.exit(0)\n"
+        "print('args:', ' '.join(sys.argv[1:]), flush=True)\n"
+        f"mode = {mode!r}\n"
+        "if mode == 'crash':\n"
+        "    print('CUDA out of memory', flush=True); sys.exit(1)\n"
+        "time.sleep(1 if mode == 'ready' else 60)\n"
+        "class H(http.server.BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        self.send_response(200 if self.path == '/health' else 404); self.end_headers()\n"
+        "    def log_message(self, *a): pass\n"
+        "port = int(sys.argv[sys.argv.index('--port') + 1])\n"
+        "http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()\n"
+    )
+    path.chmod(0o755)
+
+
+def free_port() -> str:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return str(s.getsockname()[1])
+
+
+@pytest.mark.parametrize(("sm", "vllm"), [("7.5", False), ("8.6", True)])
+def test_vllm_offered_only_from_sm80(tmp_path, monkeypatch, sm, vllm):
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "nvidia-smi").write_text(
+        f'#!/bin/sh\ncase "$*" in *compute_cap*) echo 9.0; echo {sm} ;; '
+        '*) echo "GPU 0: NVIDIA (UUID: GPU-x)" ;; esac\n'
+    )
+    (fake / "nvidia-smi").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    for d in ("llama", "vllm", "hf"):
+        (tmp_path / "nfs" / d).mkdir(parents=True)
+    (tmp_path / "nfs/hf/config.json").write_text("{}")
+    (tmp_path / "nfs/m.gguf").write_text("gguf")
+    script = configure(
+        tmp_path,
+        models=f"m {tmp_path}/nfs/m.gguf\nhf {tmp_path}/nfs/hf",
+        LLAMA_CPP_URI=str(tmp_path / "nfs/llama"),
+        VLLM_URI=str(tmp_path / "nfs/vllm"),
+    )
+    result = run(script, tmp_path, "--no-agents", "--dry-run")
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    assert "(dry-run) вопрос: Обнаружены GPU" in out
+    assert "llama.cpp: используется на месте" in out
+    assert ("vllm: " in out) is vllm
+    assert ("m (llama.cpp) hf (vllm)" in out) is vllm
+    if not vllm:
+        assert f"compute capability {sm} (ниже 8.0) — vLLM не предлагается" in out
+        assert f"hf: пропущена — нужен vLLM, а GPU sm{sm} его не поддерживает" in out
+        served = run(script, tmp_path, "--no-agents", "--serve=hf", "--dry-run")
+        assert served.returncode == 4
+        assert "через vLLM" in served.stderr
 
 
 def test_model_served_after_install(tmp_path):
-    llama = tmp_path / "nfs/llama/bin/llama-server"
-    llama.parent.mkdir(parents=True)
-    llama.write_text(FAKE_SERVER)
-    llama.chmod(0o755)
+    fake_server(tmp_path / "nfs/llama/bin/llama-server")
     gguf = tmp_path / "nfs/m.gguf"
     gguf.write_text("gguf")
+    port = free_port()
     script = configure(
         tmp_path,
         models=f"m {gguf}\nhf {tmp_path}/nfs/hf/ zip-parts",
         LLAMA_CPP_URI=str(tmp_path / "nfs/llama"),
+        SERVE_PORT=port,
     )
     dry = run(script, tmp_path, "--no-agents", "--local", "--dry-run", "--models=m")
     assert dry.returncode == 0, dry.stdout + dry.stderr
-    assert "(dry-run) вопрос: Запустить модель m через llama.cpp на 127.0.0.1:8000?" in dry.stdout
+    assert (
+        f"(dry-run) вопрос: Запустить модель m через llama.cpp на 127.0.0.1:{port}?" in dry.stdout
+    )
+    assert f"ожидание готовности: http://127.0.0.1:{port}/health" in dry.stdout
 
     unknown = run(script, tmp_path, "--no-agents", "--serve=typo")
     assert unknown.returncode == 6
@@ -390,13 +473,55 @@ def test_model_served_after_install(tmp_path):
     pid, name = (server / "server.pid").read_text().split()
     try:
         assert name == "m"
-        assert "m запущен" in result.stdout
+        # Скрипт отпускает только после ответа /health.
+        assert "m готов за" in result.stdout
+        health = subprocess.run(
+            [
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--noproxy",
+                "*",
+                f"http://127.0.0.1:{port}/health",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert health.stdout == "200"
         log = (server / "m.log").read_text()
-        assert "--alias m --host 127.0.0.1 --port 8000" in log
+        assert f"--alias m --host 127.0.0.1 --port {port}" in log
         again = run(script, tmp_path, "--no-agents", "--local")
         assert "Сервер уже запущен: m" in again.stdout
     finally:
         os.kill(int(pid), 15)
+
+
+@pytest.mark.parametrize("mode", ["crash", "hang"])
+def test_server_that_never_gets_ready_is_reported(tmp_path, mode):
+    fake_server(tmp_path / "nfs/llama/bin/llama-server", mode)
+    gguf = tmp_path / "nfs/m.gguf"
+    gguf.write_text("gguf")
+    script = configure(
+        tmp_path,
+        models=f"m {gguf}",
+        LLAMA_CPP_URI=str(tmp_path / "nfs/llama"),
+        SERVE_PORT=free_port(),
+        SERVE_TIMEOUT="4",
+    )
+    result = run(script, tmp_path, "--no-agents", "--serve=m")
+    assert result.returncode == 1
+    server = Path(f"{tmp_path}/tmp/setup-work-{os.getuid()}/server")
+    assert not (server / "server.pid").exists()
+    if mode == "crash":
+        assert "завершился, не успев запуститься" in result.stderr
+        assert "CUDA out of memory" in result.stderr  # хвост лога — сразу в выводе
+    else:
+        assert "не ответил за 4 с и остановлен" in result.stderr
+        busy = subprocess.run(["pgrep", "-f", str(tmp_path / "nfs/llama")], capture_output=True)
+        assert busy.returncode == 1  # сервер не остался в фоне
 
 
 @pytest.mark.skipif(not shutil.which("unzip"), reason="нужен unzip")
@@ -654,3 +779,46 @@ def test_missing_token_is_asked_checked_and_saved(tmp_path, pypi_server):
     stale = run(script, tmp_path, "--no-agents", "--no-local", "--yes")
     assert stale.returncode == 0, stale.stderr
     assert "реестр отклонил токен" in stale.stdout and "замените токен" in stale.stdout
+
+
+def test_interrupted_wait_stops_server(tmp_path):
+    import signal
+    import time
+
+    fake_server(tmp_path / "nfs/llama/bin/llama-server", "hang")
+    gguf = tmp_path / "nfs/m.gguf"
+    gguf.write_text("gguf")
+    script = configure(
+        tmp_path,
+        models=f"m {gguf}",
+        LLAMA_CPP_URI=str(tmp_path / "nfs/llama"),
+        SERVE_PORT=free_port(),
+    )
+    (tmp_path / "tmp").mkdir()
+    proc = subprocess.Popen(
+        [os.environ.get("SETUP_LITE_SHELL", "sh"), str(script), "--no-agents", "--serve=m"],
+        env={
+            "HOME": str(tmp_path / "home"),
+            "PATH": os.environ["PATH"],
+            "SETUP_WORK_HOME": str(tmp_path / "sw"),
+            "TMPDIR": str(tmp_path / "tmp"),
+        },
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    pidfile = Path(f"{tmp_path}/tmp/setup-work-{os.getuid()}/server/server.pid")
+    for _ in range(100):
+        if pidfile.exists():
+            break
+        time.sleep(0.1)
+    server_pid = int(pidfile.read_text().split()[0])
+    proc.send_signal(signal.SIGINT)
+    _, err = proc.communicate(timeout=30)
+    assert proc.returncode == 130
+    assert "сервер остановлен" in err
+    assert not pidfile.exists()
+    time.sleep(0.5)
+    with pytest.raises(ProcessLookupError):
+        os.kill(server_pid, 0)

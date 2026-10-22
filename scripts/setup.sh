@@ -63,6 +63,7 @@ LLAMA_CPP_PATH=''        # путь к llama-server внутри; пусто —
 # vLLM: ZIP с venv (`zip -ry`), собранным на той же версии Python, что стоит на машине.
 VLLM_URI='hdfs:///CHANGE-ME/engines/vllm-venv.zip'
 VLLM_PATH=''             # каталог venv внутри (с pyvenv.cfg); пусто — найти автоматически
+VLLM_MIN_SM='8.0'        # vLLM только на GPU с compute capability не ниже (sm80 — Ampere); иначе llama.cpp
 
 # Модели по одному на строку: имя  источник  [формат].
 # Форматы: file — один файл (GGUF); zip — один архив; zip-parts — каталог с <имя>-1-of-N.zip;
@@ -78,6 +79,7 @@ qwen3.6-27b-q4   hdfs:///CHANGE-ME/models/gguf/Qwen3.6-27B-Q4_K_M.gguf  file
 # Запуск модели после установки: OpenAI-совместимый API на этом адресе.
 SERVE_HOST='127.0.0.1'
 SERVE_PORT='30000'
+SERVE_TIMEOUT='1800'     # сколько секунд ждать готовности сервера (загрузка весов)
 
 # Прокси, если нужен:
 # export HTTPS_PROXY=http://CHANGE-ME-proxy-host:3128
@@ -175,8 +177,15 @@ run() {
 
 LITE_TMP=
 STTY_SAVED=
+SERVER_STARTING=
 cleanup() {
     if [ -n "$STTY_SAVED" ]; then stty "$STTY_SAVED" </dev/tty 2>/dev/null || true; fi
+    # Прерванный запуск не оставляет полузагруженный сервер.
+    if [ -n "$SERVER_STARTING" ]; then
+        kill "$SERVER_STARTING" 2>/dev/null || true
+        rm -f "$SERVER_DIR/server.pid"
+        say "запуск сервера прерван — сервер остановлен" >&2
+    fi
     if [ -n "$LITE_TMP" ]; then rm -rf "$LITE_TMP"; fi
 }
 trap cleanup EXIT
@@ -533,8 +542,15 @@ install_agent() {
     gitq -C "$src" -c advice.detachedHead=false checkout --detach FETCH_HEAD \
         || die "не удалось переключить $src на $ref" 1
     [ -f "$src/$script" ] || die "в $repo нет $script" 6
-    mkdir -p "$root/config" "$root/bin"
     rm -f "$mark"
+    run_script || return 1
+    gitq -C "$src" rev-parse HEAD > "$mark"
+    say "  $name установлен ($(cat "$mark"))"
+}
+
+# Запуск скрипта агента в $src; 1 — скрипт завершился с ошибкой.
+run_script() {
+    mkdir -p "$root/config" "$root/bin"
     say "  \$ bash $script"
     # setup.sh получает терминал, чтобы пройти собственную настройку.
     if [ -n "$INTERACTIVE" ]; then exec 3</dev/tty; else exec 3</dev/null; fi
@@ -548,9 +564,20 @@ install_agent() {
         PATH="$root/bin:$PATH" \
         bash "./$script" <&3 ) || rc=$?
     exec 3<&-
-    [ "$rc" -eq 0 ] || return 1
-    gitq -C "$src" rev-parse HEAD > "$mark"
-    say "  $name установлен ($(cat "$mark"))"
+    [ "$rc" -eq 0 ]
+}
+
+# Установленный агент: скрипт агента запускается при каждом запуске, без обновления исходников.
+rerun_agent() {
+    [ -f "$src/$script" ] || die "в $src нет $script; переустановите: --reinstall=$name" 6
+    say "  повторный запуск $script для установленной ревизии"
+    if run_script; then return 0; fi
+    say "  $name: $script завершился с ошибкой"
+    if confirm "Переустановить $name начисто и повторить $script?"; then
+        wipe_agent
+        install_agent && return 0
+    fi
+    die "$name: $script завершился с ошибкой" 1
 }
 
 setup_agent() {
@@ -566,7 +593,7 @@ setup_agent() {
         if [ -n "$reinstall" ]; then say "  переустановить начисто (config сохраняется)"; fi
         say "  проверить ревизию $ref; обновление установленного — после подтверждения"
         say "  \$ git clone/fetch $repo $ref → $src"
-        say "  \$ bash $script (в $src, SETUP_WORK_BACKEND=gigachat)"
+        say "  \$ bash $script (в $src, SETUP_WORK_BACKEND=gigachat; установленному — при каждом запуске)"
         return 0
     fi
     current=$(cat "$mark" 2>/dev/null || true)
@@ -583,6 +610,7 @@ setup_agent() {
     fi
     if [ -n "$current" ] && [ -z "$CHECK_UPDATES" ] && [ -z "$reinstall" ]; then
         say "  установлен ${current%"${current#????????????}"}; проверка обновлений выключена"
+        rerun_agent
         return 0
     fi
     if [ -z "$current" ] && ! ask "Установить $name из $repo ($ref)?" "$AGENTS_EXPLICIT$reinstall"; then
@@ -593,12 +621,13 @@ setup_agent() {
     rev=$(remote_rev "$repo" "$ref")
     if [ -n "$current" ] && [ -z "$reinstall" ]; then
         case "$current" in
-            "$rev"*) say "  установленная ревизия актуальна"; return 0 ;;
+            "$rev"*) say "  установленная ревизия актуальна"; rerun_agent; return 0 ;;
         esac
         say "  на сервере новая ревизия $ref: ${current%"${current#????????????}"} → ${rev%"${rev#????????????}"}"
         show_changes
         if ! confirm "Обновить $name и повторить $script?"; then
             say "  оставлена установленная версия"
+            rerun_agent
             return 0
         fi
     fi
@@ -995,8 +1024,13 @@ repair_venv() {
 
 VLLM_READY=
 VLLM_FLAG=
+VLLM_BLOCKED=
 setup_vllm() {
     if [ -z "$VLLM_URI" ]; then say "vLLM: VLLM_URI не задан, шаг пропущен"; return 0; fi
+    if [ -n "$VLLM_BLOCKED" ]; then
+        say "vLLM: пропущен — GPU sm$VLLM_BLOCKED, а vLLM нужен sm$VLLM_MIN_SM и выше; модели — через llama.cpp"
+        return 0
+    fi
     dest="$ENGINES_DIR/vllm"
     fmt=zip
     if [ "$(uri_scheme "$VLLM_URI")" = local ] && [ -d "$(local_path "$VLLM_URI")" ]; then fmt=dir; fi
@@ -1071,7 +1105,7 @@ model_engine() {
 engine_ready() {
     case "$1" in
         llama.cpp) [ -n "$LLAMA_READY" ] || command -v llama-server >/dev/null 2>&1 ;;
-        *) [ -n "$VLLM_READY" ] || command -v vllm >/dev/null 2>&1 ;;
+        *) [ -z "$VLLM_BLOCKED" ] && { [ -n "$VLLM_READY" ] || command -v vllm >/dev/null 2>&1; } ;;
     esac
 }
 
@@ -1146,21 +1180,48 @@ start_server() {
             --host "$SERVE_HOST" --port "$SERVE_PORT"
     fi
     s_log="$SERVER_DIR/$s_name.log"
+    case "$SERVE_HOST" in 0.0.0.0|::|'[::]') s_probe=127.0.0.1 ;; *) s_probe=$SERVE_HOST ;; esac
+    s_health="http://$s_probe:$SERVE_PORT/health"
     say "  \$ $* > $s_log"
-    [ -n "$DRY_RUN" ] && return 0
+    if [ -n "$DRY_RUN" ]; then say "  ожидание готовности: $s_health (до $SERVE_TIMEOUT с)"; return 0; fi
+    case "$SERVE_TIMEOUT" in ''|*[!0-9]*) die "SERVE_TIMEOUT должен быть числом секунд" 2 ;; esac
+    need curl
     mkdir -p "$SERVER_DIR"
     nohup "$@" > "$s_log" 2>&1 < /dev/null &
     s_pid=$!
+    SERVER_STARTING=$s_pid
     say "$s_pid $s_name" > "$SERVER_DIR/server.pid"
-    # Ошибка аргументов, занятый порт или нехватка памяти обычно видны в первые секунды.
-    sleep 3
-    if ! kill -0 "$s_pid" 2>/dev/null; then
-        rm -f "$SERVER_DIR/server.pid"
-        tail -n 20 "$s_log" >&2 || true
-        die "$s_name: сервер завершился сразу после запуска; лог: $s_log" 1
-    fi
-    say "  $s_name запущен (PID $s_pid): http://$SERVE_HOST:$SERVE_PORT/v1, модель «$s_name»"
-    say "  загрузка весов может занять несколько минут; лог: $s_log; остановить: kill $s_pid"
+    say "  ожидание готовности сервера (PID $s_pid): $s_health; прервать — Ctrl+C"
+    s_start=$(date +%s)
+    s_next=30
+    while :; do
+        if ! kill -0 "$s_pid" 2>/dev/null; then
+            SERVER_STARTING=
+            rm -f "$SERVER_DIR/server.pid"
+            tail -n 20 "$s_log" >&2 || true
+            die "$s_name: сервер завершился, не успев запуститься; лог: $s_log" 1
+        fi
+        # Прокси не должен перехватывать запрос к локальному серверу.
+        s_code=$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' --max-time 5 \
+            -- "$s_health" 2>/dev/null || true)
+        [ "$s_code" = 200 ] && break
+        s_elapsed=$(($(date +%s) - s_start))
+        if [ "$s_elapsed" -ge "$SERVE_TIMEOUT" ]; then
+            kill "$s_pid" 2>/dev/null || true
+            SERVER_STARTING=
+            rm -f "$SERVER_DIR/server.pid"
+            tail -n 20 "$s_log" >&2 || true
+            die "$s_name: сервер не ответил за $SERVE_TIMEOUT с и остановлен; лог: $s_log (увеличьте SERVE_TIMEOUT)" 1
+        fi
+        if [ "$s_elapsed" -ge "$s_next" ]; then
+            say "  …ещё загружается ($s_elapsed с): $(tail -n 1 "$s_log" 2>/dev/null | cut -c1-100)"
+            s_next=$((s_next + 30))
+        fi
+        sleep 2
+    done
+    SERVER_STARTING=
+    say "  $s_name готов за $(($(date +%s) - s_start)) с (PID $s_pid): http://$SERVE_HOST:$SERVE_PORT/v1, модель «$s_name»"
+    say "  лог: $s_log; остановить: kill $s_pid"
 }
 
 serve_local() {
@@ -1203,6 +1264,13 @@ serve_local() {
 }
 
 has_gpu() { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; }
+
+# Наименьшая compute capability среди GPU (например, 7.5); пусто — узнать не удалось.
+gpu_min_sm() {
+    command -v nvidia-smi >/dev/null 2>&1 || return 0
+    nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+        | awk '$1 ~ /^[0-9]+\.[0-9]+$/ { if (m == "" || $1 + 0 < m + 0) m = $1 } END { if (m != "") print m }'
+}
 
 setup_local() {
     models=$(say "$MODELS" | sed -e 's/#.*//' -e '/^[[:space:]]*$/d')
@@ -1252,6 +1320,15 @@ setup_local() {
         set +f
         if [ "$(model_engine "$1" "$2")" = llama.cpp ]; then LLAMA_FLAG=1; else VLLM_FLAG=1; fi
     fi
+    # vLLM не работает на GPU ниже sm80 — тогда предлагается только llama.cpp.
+    sm=$(gpu_min_sm)
+    if [ -n "$sm" ] && awk -v a="$sm" -v b="$VLLM_MIN_SM" 'BEGIN { exit !(a + 0 < b + 0) }'; then
+        VLLM_BLOCKED=$sm
+        say "  GPU: compute capability $sm (ниже $VLLM_MIN_SM) — vLLM не предлагается, только llama.cpp"
+    fi
+    if [ -n "$VLLM_BLOCKED" ] && [ -n "$VLLM_FLAG" ]; then
+        die "модель $SERVE (--serve) запускается через vLLM, а GPU sm$VLLM_BLOCKED его не поддерживает; выберите GGUF-модель" 4
+    fi
     say "  движки: $ENGINES_DIR; модели: $MODELS_DIR"
     setup_llama
     setup_vllm
@@ -1273,7 +1350,12 @@ setup_local() {
                 *" $name "*)
                     say "  $name: движок $engine не установлен — модель загружается по --models"
                     fit="$fit $name" ;;
-                *) say "  $name: пропущена — нужен $engine, а он не установлен (загрузить всё равно: --models=$name)" ;;
+                *)
+                    if [ "$engine" = vllm ] && [ -n "$VLLM_BLOCKED" ]; then
+                        say "  $name: пропущена — нужен vLLM, а GPU sm$VLLM_BLOCKED его не поддерживает"
+                    else
+                        say "  $name: пропущена — нужен $engine, а он не установлен (загрузить всё равно: --models=$name)"
+                    fi ;;
             esac
         fi
     done
